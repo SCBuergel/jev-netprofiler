@@ -45,6 +45,13 @@ class FlowSeg:
     splt_direction: list[int] = field(default_factory=list)  # 0 up, 1 down
     splt_ps: list[int] = field(default_factory=list)
     splt_piat_ms: list[int] = field(default_factory=list)
+    local_port: int = 0
+
+    @property
+    def tuple4(self) -> tuple[int, int, str]:
+        """(protocol, local port, remote endpoint): stable across NAT in the
+        common case where masquerade keeps the source port."""
+        return (self.protocol, self.local_port, self.endpoint)
 
     @property
     def packets(self) -> int:
@@ -81,16 +88,6 @@ class RollingWindow:
     report how many endpoints in the window are *new* (first contact).
     """
 
-    def __init__(self, seconds: float = WINDOW_SECONDS) -> None:
-        self.seconds = seconds
-        self._segs: deque[FlowSeg] = deque()
-        self._lock = threading.Lock()
-        self._seen_endpoints: set[str] = set()
-        self._new_in_window: dict[str, int] = {}  # endpoint -> first-seen ms
-        self._flow_first_seen: dict[str, int] = {}  # key -> first_ms of its first segment ever
-        self._flow_last_seen: dict[str, int] = {}
-        self.total_segments = 0
-
     def add(self, seg: FlowSeg) -> None:
         with self._lock:
             self._segs.append(seg)
@@ -108,9 +105,20 @@ class RollingWindow:
     # activity would appear to have a trailing idle gap.
     LAG_MS = int(ACTIVE_TIMEOUT * 1000) + 250
 
+    def __init__(self, seconds: float = WINDOW_SECONDS) -> None:
+        self.seconds = seconds
+        self.lag_ms = self.LAG_MS  # a capture that holds segments back adds to this
+        self._segs: deque[FlowSeg] = deque()
+        self._lock = threading.Lock()
+        self._seen_endpoints: set[str] = set()
+        self._new_in_window: dict[str, int] = {}  # endpoint -> first-seen ms
+        self._flow_first_seen: dict[str, int] = {}  # key -> first_ms of its first segment ever
+        self._flow_last_seen: dict[str, int] = {}
+        self.total_segments = 0
+
     def snapshot(self, at_ms: int | None = None) -> "WindowView":
         """Return the segments in the window plus session-level context."""
-        end = at_ms if at_ms is not None else now_ms() - self.LAG_MS
+        end = at_ms if at_ms is not None else now_ms() - self.lag_ms
         start = end - int(self.seconds * 1000)
         with self._lock:
             while self._segs and self._segs[0].last_ms < start:

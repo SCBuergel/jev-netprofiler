@@ -32,6 +32,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--speed", type=float, default=1.0, help="pcap replay speed multiplier")
     p.add_argument("--interface", "-i", action="append", default=[], help="capture only these vif* interfaces (repeatable; eth0 is always refused)")
     p.add_argument("--local-net", action="append", default=[], help="CIDR of the downstream (qube) side, for upload/download orientation when the SYN and private-address heuristics cannot tell (repeatable)")
+    p.add_argument("--self", dest="self_capture", action="store_true", help="also profile this qube's own applications on eth0, leaving the profiler's own Jev traffic out")
+    p.add_argument("--self-iface", default="eth0", help="interface for --self (default eth0)")
+    p.add_argument("--dump-questions", action="store_true", help="print the exact Jev questions (built from the catalog) as JSON and exit")
+    p.add_argument("--include-own-traffic", action="store_true", help="with --self: do not exclude the profiler's own flows (to see the contamination)")
     p.add_argument("--no-heartbeat", action="store_true", help="do not send the per-second multicast packet that keeps nfstream expiring idle flows on quiet vifs")
     p.add_argument("--headless", action="store_true", help="no TUI; print one JSON line per vif per tick")
     p.add_argument("--show-shape", action="store_true", help="with --headless, include the rendered shape text")
@@ -56,6 +60,9 @@ def settings_from(args: argparse.Namespace) -> Settings:
     s.interfaces = args.interface
     s.local_nets = args.local_net
     s.heartbeat = not args.no_heartbeat
+    s.self_capture = args.self_capture
+    s.self_iface = args.self_iface
+    s.include_own = args.include_own_traffic
     s.dry_run = args.dry_run
     s.headless = args.headless
     s.state_file = args.state_file
@@ -156,6 +163,12 @@ def main(argv: list[str] | None = None) -> int:
         ProfilerApp(file_provider(args.attach), refresh_s=1.0).run()
         return 0
     settings = settings_from(args)
+    if args.dump_questions:
+        from .catalog import load_catalog
+        from .jev import FakeJevClient
+
+        print(json.dumps(FakeJevClient(load_catalog(settings.catalog_path)).questions_json(), indent=2))
+        return 0
     engine = Engine(settings)
     code = 0
     try:

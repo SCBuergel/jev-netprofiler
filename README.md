@@ -1,16 +1,18 @@
 # netprofiler
 
-Traffic profiler for a Qubes OS net-qube. It captures flow metadata on every
-`vif*` interface (one downstream qube each), describes the traffic shape of
-the last ten seconds in words, asks TypeSafe's Jev model which catalogued
-activity that shape resembles, and shows the result in a terminal UI together
+Traffic profiler for Qubes OS. It captures flow metadata on every `vif*`
+interface of a net-qube (one downstream qube each) and, optionally, on the
+qube's own uplink for its own applications; describes the traffic shape of
+the last ten seconds in words; asks TypeSafe's Jev model which catalogued
+activity that shape resembles; and shows the result in a terminal UI together
 with a running count of identifying bits.
 
 Jev receives text made of level words only ("download-dominated",
 "keystroke-like", "brief idle gaps"). No addresses, ports, byte counts,
 timestamps or packet counts leave the qube. Every calculation (bucketing,
 entropy, bit accounting, smoothing) is done in Python; Jev only maps a
-described shape to an activity name. `eth0` is never captured.
+described shape to an activity name. `eth0` is captured only in self mode
+(below), never as a stand-in for downstream traffic.
 
 ## How it works
 
@@ -43,6 +45,23 @@ population of 8 billion (`--population`). The plain per-tick sum is shown as
 `raw` for comparison. Both figures treat episodes as independent observations,
 which makes them an upper bound.
 
+## Two capture modes
+
+- **Net-qube mode** (always on): every `vif*` interface gets its own pane.
+  Interfaces are rediscovered every few seconds, so a qube attached later
+  gets a pane when it starts.
+- **Self mode** (`--self`): one extra pane, `self`, for the applications
+  running in the same qube as the profiler, captured on `eth0`. The
+  profiler's own Jev calls are left out: every socket the process opens is
+  recorded at connect time and matched against captured flows, with a
+  periodic socket snapshot and the API host's resolved addresses as backup.
+  `--include-own-traffic` switches that off to show the contamination (a
+  request/response every two seconds reads as a wallet polling an RPC).
+  When both modes run in one qube, flows already seen on a vif are dropped
+  from the `self` pane so NAT'd downstream traffic is not counted twice.
+
+Both can run together; the installer enables both by default.
+
 ## Install on the net-qube
 
 The qube's template needs python3 3.11 or newer with the venv module, and
@@ -73,6 +92,7 @@ there (with `uv` if present, else `python3 -m venv`), writes the API key to
 placeholder to edit), generates the systemd unit, links it into
 `/etc/systemd/system`, appends a hook to `/rw/config/rc.local` that re-links
 it on every boot, and starts the service. Running it again is harmless.
+`SELF=0 sudo ./install.sh` leaves self mode out of the unit.
 
 The service runs as root (libpcap needs `CAP_NET_RAW`), captures every
 `vif*`, calls Jev, writes `/run/netprofiler/state.json` each tick and logs
@@ -98,11 +118,12 @@ sudo -E .venv/bin/netprofiler          # capture vif*, call Jev, TUI in one proc
 .venv/bin/pytest                       # needs neither libpcap nor network
 ```
 
-Other flags: `-i vif3.0` to capture only named interfaces (`eth0` is refused
-even if listed), `--local-net CIDR` to state which side of a flow is the
-downstream qube when the SYN direction and private/public address split
-cannot tell, `--no-heartbeat` (see limits), `--catalog`, `--model`,
-`--state-file`, `--quiet`, `--log`.
+Other flags: `--self` and `--include-own-traffic` (see capture modes),
+`-i vif3.0` to capture only named interfaces (`eth0` is refused even if
+listed; self mode is the only way to capture it), `--local-net CIDR` to state
+which side of a flow is the downstream qube when the SYN direction and
+private/public address split cannot tell, `--no-heartbeat` (see limits),
+`--catalog`, `--model`, `--state-file`, `--quiet`, `--log`.
 
 The TUI shows one pane per vif side by side: current activity with
 confidence, intensity and interactivity; a bar chart of the top five smoothed
@@ -118,13 +139,12 @@ write them in the reducer's vocabulary (flows, direction, bursts, packet
 sizes, spacing, idle gaps, endpoints, transport) and never mention ports or
 services. Keep `idle` and `unknown`; they are the no-match outcomes.
 
-The shipped catalog has 30 entries in three groups: everyday activities for
-contrast (browsing, streaming, calls, messaging, ssh, downloads, package and
-dependency fetches, torrents), privacy tooling (VPN, Tor browsing, a mixnet
-node with cover traffic) and Ethereum (node initial sync, node following the
-chain, validator attesting, block proposal, wallet polling an RPC endpoint,
-sending a transaction, a DeFi swap in a browser dapp, an NFT mint rush, an
-MEV bot, a websocket block subscription).
+The shipped catalog has 26 entries: everyday activities for contrast
+(browsing, streaming, calls, messaging, ssh, downloads, package and
+dependency fetches, torrents), Claude Code, privacy tooling (VPN, Tor
+browsing, a mixnet node with cover traffic) and Ethereum wallet activity
+(polling an RPC endpoint, sending a transaction, a DeFi swap in a browser
+dapp, an NFT mint rush, a websocket block subscription).
 
 ## Local test without a downstream qube
 
@@ -144,22 +164,21 @@ sudo nft add rule ip qubes custom-input iifname "vif99.0" accept
 python tools/fake_qube.py serve &
 sudo -E .venv/bin/netprofiler -i vif99.0 --local-net 10.137.99.2/32
 sudo ip netns exec npf python tools/fake_qube.py play      # all scenarios, about five minutes
-sudo ip netns exec npf python tools/fake_qube.py play node wallet sendtx   # or a selection
+sudo ip netns exec npf python tools/fake_qube.py play claudecode wallet sendtx   # or a selection
 
 sudo ip netns del npf
 sudo nft -a list chain ip qubes custom-input               # note the handle, then
 sudo nft delete rule ip qubes custom-input handle <n>
 ```
 
-Scenarios: typing, download, call, browsing, node (eight peer flows with
-gossip and a burst every 12 s slot), wallet (an RPC poll every 4 s), mevbot,
-sendtx (quiet, one short burst, quiet). On these Jev answers `ssh
-interactive session` (with `someone_is_typing` around 0.9), `video
-streaming`, `video call`, `web browsing`, `ethereum node following the
-chain`, `wallet polling an rpc endpoint`, `mev bot` and `sending a
-transaction from a wallet`, each at confidence 0.8 to 0.99 once the window
-has filled. The download reads as streaming because its read-and-sleep
-throttle really does produce 2 s bursts.
+Scenarios: typing, download, call, browsing, claudecode (a large upload,
+then a streamed reply in small chunks, then a pause), wallet (an RPC poll
+every 4 s), sendtx (quiet, one short burst, quiet). On these Jev answers
+`ssh interactive session` (with `someone_is_typing` around 0.9), `video
+streaming`, `video call`, `web browsing`, `wallet polling an rpc endpoint`
+and `sending a transaction from a wallet`, each at confidence 0.8 to 0.99
+once the window has filled. The download reads as streaming because its
+read-and-sleep throttle really does produce 2 s bursts.
 
 ## Limits
 

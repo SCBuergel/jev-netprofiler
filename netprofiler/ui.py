@@ -18,7 +18,7 @@ from typing import Callable
 
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Digits, Footer, Header, Label, RichLog, Sparkline, Static
 
 from .config import HISTORY_TICKS, TOP_N
@@ -72,7 +72,7 @@ class VifPane(Vertical):
         self._logged_events = 0
 
     def compose(self) -> ComposeResult:
-        yield Label(self.vif, classes="title")
+        yield Label("self (this qube's apps on eth0)" if self.vif == "self" else self.vif, classes="title")
         yield Label("starting", classes="status")
         yield Static("—", classes="activity")
         yield Static("", classes="bars")
@@ -90,6 +90,8 @@ class VifPane(Vertical):
         extra = f"  ticks {v.get('ticks', 0)}  answered {v.get('answered', 0)}  dropped {v.get('dropped', 0)}"
         if v.get("latency_s") is not None:
             extra += f"  jev {v['latency_s']*1000:.0f}ms"
+        if v.get("excluded"):
+            extra += f"  excluded {v['excluded']}"
         if v.get("error"):
             extra += f"  [red]{v['error']}[/]"
         self.query_one(".status", Label).update(status + extra)
@@ -150,26 +152,72 @@ class VifPane(Vertical):
 
 
 class ProfilerApp(App):
+    """Panes side by side. Keys: 1-9 show only that interface, a show all,
+    x hide the selected interface, d toggle the raw Jev input, q quit."""
+
     TITLE = "net-qube traffic profiler"
     CSS = """
     #panes { height: 1fr; }
     #empty { content-align: center middle; height: 1fr; color: $text-muted; }
+    #raw { height: 45%; border: round $secondary; padding: 0 1; display: none; }
+    #raw > .rawtitle { color: $secondary; text-style: bold; height: 1; }
     """
-    BINDINGS = [("q", "quit", "Quit"), ("s", "toggle_shape", "Show shape text")]
+    BINDINGS = [
+        ("q", "quit", "Quit"),
+        ("a", "show_all", "All interfaces"),
+        ("x", "hide_selected", "Hide selected"),
+        ("d", "toggle_raw", "Raw Jev input"),
+    ] + [(str(i), f"select({i})", f"#{i}") for i in range(1, 10)]
 
     def __init__(self, provider: SnapshotProvider, refresh_s: float = 0.5, on_quit: Callable[[], None] | None = None) -> None:
         super().__init__()
         self._provider = provider
         self._refresh = refresh_s
         self._on_quit = on_quit
-        self._show_shape = False
         self._last: dict = {}
+        self._order: list[str] = []  # interfaces in first-seen order; number keys index this
+        self._selected: str | None = None  # None = all
+        self._hidden: set[str] = set()
+        self._show_raw = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Horizontal(id="panes")
         yield Static("waiting for vif* interfaces…", id="empty")
+        with VerticalScroll(id="raw"):
+            yield Label("", classes="rawtitle")
+            yield Static("", id="rawbody")
         yield Footer()
+
+    # -- interface selection ------------------------------------------------
+    def _visible(self, vif: str) -> bool:
+        if vif in self._hidden:
+            return False
+        return self._selected is None or vif == self._selected
+
+    def action_select(self, n: int) -> None:
+        if 1 <= n <= len(self._order):
+            self._selected = self._order[n - 1]
+            self._hidden.discard(self._selected)
+            self.refresh_panes()
+
+    def action_show_all(self) -> None:
+        self._selected = None
+        self._hidden.clear()
+        self.refresh_panes()
+
+    def action_hide_selected(self) -> None:
+        target = self._selected or (self._order[0] if self._order else None)
+        if target is None:
+            return
+        self._hidden.add(target)
+        self._selected = None
+        self.refresh_panes()
+
+    def action_toggle_raw(self) -> None:
+        self._show_raw = not self._show_raw
+        self.query_one("#raw").display = self._show_raw
+        self.refresh_panes()
 
     def on_mount(self) -> None:
         self.set_interval(self._refresh, self.refresh_panes)
@@ -193,22 +241,25 @@ class ProfilerApp(App):
             else:
                 empty.update("service running, no vif* interfaces yet\nnothing uses this qube as its NetVM; start a qube that does")
         for vif in vifs:
+            if vif not in self._order:
+                self._order.append(vif)
             if not panes.query(f"#{pane_id(vif)}"):
                 panes.mount(VifPane(vif))
         for vif, v in vifs.items():
             try:
-                panes.query_one(f"#{pane_id(vif)}", VifPane).update_from(v, snap.get("catalog_size", 2))
+                pane = panes.query_one(f"#{pane_id(vif)}", VifPane)
+                pane.display = self._visible(vif)
+                pane.update_from(v, snap.get("catalog_size", 2))
             except Exception as e:
                 self.log.error(f"pane update failed for {vif}: {e!r}")
         total = sum(float(v.get("total_bits") or 0) for v in vifs.values())
-        self.sub_title = f"{len(vifs)} vif · {total:.1f} bits total"
-        if self._show_shape and vifs:
-            first = next(iter(vifs.values()))
-            self.notify(first.get("shape_text", "")[:600], title="shape text (first vif)", timeout=4)
-            self._show_shape = False
-
-    def action_toggle_shape(self) -> None:
-        self._show_shape = True
+        keys = "  ".join(f"{i+1}:{name}" + ("" if self._visible(name) else " (hidden)") for i, name in enumerate(self._order))
+        self.sub_title = f"{len(vifs)} interface(s) · {total:.1f} bits total · {keys}"
+        if self._show_raw:
+            target = self._selected or next((n for n in self._order if self._visible(n)), None)
+            v = vifs.get(target or "", {})
+            self.query_one(".rawtitle", Label).update(f"raw input to Jev for {target}: the `state` of the last call (questions are static: netprofiler --dump-questions)")
+            self.query_one("#rawbody", Static).update(json.dumps(v.get("jev_state") or {}, indent=2) if v else "")
 
     async def action_quit(self) -> None:
         if self._on_quit:

@@ -13,7 +13,8 @@ Then, in three terminals:
     python tools/fake_qube.py serve                       # host side: servers on 10.137.99.1
     sudo -E .venv/bin/netprofiler -i vif99.0 --local-net 10.137.99.2/32
     sudo ip netns exec npf python tools/fake_qube.py play  # inside the namespace: all scenarios
-    sudo ip netns exec npf python tools/fake_qube.py play node wallet   # or just some
+    sudo ip netns exec npf python tools/fake_qube.py play claudecode wallet   # or just some
+    (`call` is kept as an out-of-catalog scenario: it should come out as unknown)
 
 Teardown:
 
@@ -39,10 +40,9 @@ HOST = "10.137.99.1"
 ECHO_PORT = 2222  # ssh-like
 HTTP_PORTS = (8080, 8081, 8082)  # three "web endpoints"
 UDP_PORT = 5000  # call-like
-PEER_PORTS = tuple(range(30300, 30308))  # eight "p2p peers" (echo)
 RPC_PORT = 8545  # "rpc endpoint" (echo)
+LLM_PORT = 7777  # "model api": takes an upload, streams a response
 BIG = 64 * 1024 * 1024
-SLOT = 12.0  # seconds
 
 
 # ---------------------------------------------------------------- servers --
@@ -78,6 +78,30 @@ class _Http(http.server.BaseHTTPRequestHandler):
             pass
 
 
+class _Llm(socketserver.StreamRequestHandler):
+    """Reads `<8-byte length><upload>` and streams a response in small chunks
+    at token-like intervals, like a model API answering a coding agent."""
+
+    def handle(self) -> None:
+        while True:
+            hdr = self.rfile.read(8)
+            if len(hdr) < 8:
+                return
+            n = int.from_bytes(hdr, "big")
+            self.rfile.read(n)
+            time.sleep(random.uniform(0.5, 2.0))  # time to first token
+            end = time.time() + random.uniform(4, 15)
+            try:
+                while time.time() < end:
+                    self.wfile.write(os.urandom(random.randint(120, 450)))
+                    self.wfile.flush()
+                    time.sleep(random.uniform(0.02, 0.09))
+                self.wfile.write(b"\0" * 8)  # end marker
+                self.wfile.flush()
+            except BrokenPipeError:
+                return
+
+
 def _udp_responder() -> None:
     """A call peer: on first packet from a client, stream back at the same
     rate independently (real calls are two unsynchronised streams, not echo)."""
@@ -111,8 +135,8 @@ def serve() -> None:
     for p in HTTP_PORTS:
         srv = http.server.ThreadingHTTPServer((HOST, p), _Http)
         threads.append(threading.Thread(target=srv.serve_forever, daemon=True))
-    for p in PEER_PORTS + (RPC_PORT,):
-        threads.append(threading.Thread(target=socketserver.ThreadingTCPServer((HOST, p), _Echo).serve_forever, daemon=True))
+    threads.append(threading.Thread(target=socketserver.ThreadingTCPServer((HOST, RPC_PORT), _Echo).serve_forever, daemon=True))
+    threads.append(threading.Thread(target=socketserver.ThreadingTCPServer((HOST, LLM_PORT), _Llm).serve_forever, daemon=True))
     for t in threads:
         t.start()
     print(f"serving echo:{ECHO_PORT} http:{HTTP_PORTS} udp:{UDP_PORT} on {HOST}", flush=True)
@@ -208,40 +232,24 @@ def _rpc_roundtrip(s: socket.socket, size: int) -> None:
         got += len(chunk)
 
 
-def node(seconds: float) -> None:
-    """node following the chain: eight long-lived peer flows trading small
-    messages both ways, plus a burst of larger messages once per slot."""
-    _say(f"node for {seconds:.0f}s")
-    peers = [socket.create_connection((HOST, p)) for p in PEER_PORTS]
-    for s in peers:
-        s.settimeout(2)
+
+def claudecode(seconds: float) -> None:
+    """coding agent: upload a large prompt, read a streamed reply, pause, repeat."""
+    _say(f"claudecode for {seconds:.0f}s")
+    s = socket.create_connection((HOST, LLM_PORT))
+    s.settimeout(30)
     end = time.time() + seconds
-    stop = threading.Event()
-
-    def chatter(s: socket.socket) -> None:
-        while not stop.is_set():
-            try:
-                _rpc_roundtrip(s, random.randint(80, 500))
-            except OSError:
-                return
-            time.sleep(random.uniform(0.05, 0.4))
-
-    ths = [threading.Thread(target=chatter, args=(s,), daemon=True) for s in peers]
-    for th in ths:
-        th.start()
-    next_slot = time.time() + random.uniform(0, SLOT)
     while time.time() < end:
-        time.sleep(0.1)
-        if time.time() >= next_slot:  # a new block arrives: several peers send it
-            for s in random.sample(peers, 4):
-                try:
-                    _rpc_roundtrip(s, random.randint(20_000, 60_000))
-                except OSError:
-                    pass
-            next_slot += SLOT
-    stop.set()
-    for s in peers:
-        s.close()
+        n = random.randint(20_000, 90_000)
+        s.sendall(n.to_bytes(8, "big") + os.urandom(n))
+        tail = b""
+        while not tail.endswith(b"\0" * 8):
+            chunk = s.recv(65536)
+            if not chunk:
+                return
+            tail = (tail + chunk)[-8:]
+        time.sleep(random.uniform(2, 8))  # reading, tool calls, typing the next turn
+    s.close()
 
 
 def wallet(seconds: float, every: float = 4.0) -> None:
@@ -257,36 +265,6 @@ def wallet(seconds: float, every: float = 4.0) -> None:
     s.close()
 
 
-def mevbot(seconds: float, rate: float = 30) -> None:
-    """mev bot: rapid small request/response to two endpoints, machine-paced."""
-    _say(f"mevbot for {seconds:.0f}s")
-    conns = [socket.create_connection((HOST, RPC_PORT)), socket.create_connection((HOST, PEER_PORTS[0]))]
-    for s in conns:
-        s.settimeout(2)
-    end = time.time() + seconds
-    period = 1.0 / rate
-    nxt = time.time()
-    i = 0
-    while time.time() < end:
-        _rpc_roundtrip(conns[i % 2], random.randint(150, 350))
-        i += 1
-        nxt += period
-        time.sleep(max(0.0, nxt - time.time()))
-    for s in conns:
-        s.close()
-
-
-def sendtx(seconds: float) -> None:
-    """sending a transaction: quiet, then one short burst of request/response, then quiet."""
-    _say(f"sendtx for {seconds:.0f}s")
-    time.sleep(seconds * 0.4)
-    s = socket.create_connection((HOST, RPC_PORT))
-    s.settimeout(2)
-    for _ in range(random.randint(5, 9)):  # nonce, gas estimate, send, receipt polls
-        _rpc_roundtrip(s, random.randint(150, 600))
-        time.sleep(random.uniform(0.05, 0.3))
-    s.close()
-    time.sleep(seconds * 0.6)
 
 
 def idle(seconds: float) -> None:
@@ -300,17 +278,11 @@ SCRIPT = [
     (idle, 12),
     (download, 25),
     (idle, 12),
-    (call, 25),
-    (idle, 12),
     (browsing, 35),
     (idle, 12),
-    (node, 40),
+    (claudecode, 45),
     (idle, 12),
     (wallet, 30),
-    (idle, 10),
-    (mevbot, 25),
-    (idle, 10),
-    (sendtx, 25),
     (idle, 10),
 ]
 

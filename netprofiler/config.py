@@ -53,6 +53,9 @@ class Settings:
     interfaces: list[str] = field(default_factory=list)  # explicit override
     local_nets: list[str] = field(default_factory=list)  # CIDRs of the downstream side (orientation override)
     heartbeat: bool = True  # send the idle-expiry heartbeat on each captured vif
+    self_capture: bool = False  # also profile this qube's own apps on eth0
+    self_iface: str = "eth0"  # interface for --self (override only for testing)
+    include_own: bool = False  # debugging: do not exclude the profiler's own flows
     dry_run: bool = False  # reduce and print, never call Jev
     headless: bool = False  # no TUI; log ticks as JSON lines to stdout
     state_file: Path | None = None  # JSON snapshot written every tick

@@ -29,8 +29,10 @@ class VifSession:
     previous: PreviousTop = field(default_factory=PreviousTop)
     prev_measures: Measures | None = None
     shape_text: str = ""
+    jev_state: dict = field(default_factory=dict)  # exactly what the last call sent
     status: str = "starting"
     last_error: str | None = None
+    excluded: str = ""  # self capture: how many flows were left out and why
     ticks: int = 0
     task: asyncio.Task | None = None
 
@@ -81,9 +83,11 @@ class Engine:
     def start_capture(self) -> None:
         if self.settings.pcap:
             self.capture.add_pcap(self.settings.pcap, self.settings.pcap_speed, loop=False)
-        else:
-            if not self.capture.scan(force=True):
-                log.info("no vif* interfaces yet (no qube uses this one as NetVM); rescanning every few seconds")
+            return
+        if self.settings.self_capture:
+            self.capture.add_self(include_own=self.settings.include_own, iface=self.settings.self_iface)
+        if not self.capture.scan(force=True) and not self.settings.self_capture:
+            log.info("no vif* interfaces yet (no qube uses this one as NetVM); rescanning every few seconds")
 
     async def run(self) -> None:
         self.start_capture()
@@ -122,6 +126,7 @@ class Engine:
 
     # -- one tick ----------------------------------------------------------
     def tick(self) -> None:
+        self.capture.flush()
         for vif, s in list(self.sessions.items()):
             window = self.capture.windows.get(vif)
             cap = self.capture.captures.get(vif)
@@ -139,17 +144,21 @@ class Engine:
                 s.status = f"capture error: {cap.error}"[:60]
             elif getattr(cap, "done", False):
                 s.status = "replay finished"
+            excluded = getattr(cap, "excluded_own", None)
+            if excluded is not None:
+                s.excluded = f"own {excluded}" + (f" downstream {cap.excluded_downstream}" if cap.excluded_downstream else "")
             if self.client.is_busy(vif):
                 s.analysis.note_dropped()
                 s.status = "dropped tick (call in flight)"
                 self._emit(s, None, [])
                 continue
             s.status = "asking"
-            s.task = asyncio.get_event_loop().create_task(self._ask(s, text))
+            s.jev_state = self.client.build_state(text, s.previous)
+            s.task = asyncio.get_event_loop().create_task(self._ask(s, s.jev_state))
 
-    async def _ask(self, s: VifSession, text: str) -> None:
+    async def _ask(self, s: VifSession, state: dict) -> None:
         try:
-            answer = await self.client.ask(s.vif, text, s.previous)
+            answer = await self.client.ask(s.vif, state)
         except Exception as e:
             s.last_error = f"{type(e).__name__}: {e}"[:120]
             s.status = "error"
@@ -182,6 +191,7 @@ class Engine:
             out["vifs"][vif] = {
                 "status": s.status,
                 "error": s.last_error,
+                "excluded": s.excluded,
                 "ticks": s.ticks,
                 "answered": a.answered_ticks,
                 "dropped": a.dropped_ticks,
@@ -202,6 +212,7 @@ class Engine:
                 "events": [(e.tick, e.kind, self.display_name(e.activity), round(e.probability, 3)) for e in list(a.events)[-30:]],
                 "latency_s": la.latency_s if la else None,
                 "shape_text": s.shape_text,
+                "jev_state": s.jev_state,
             }
         return out
 

@@ -135,17 +135,23 @@ class JevClient:
     def is_busy(self, vif: str) -> bool:
         return vif in self._busy
 
-    async def ask(self, vif: str, shape_text: str, previous: PreviousTop) -> Answer | None:
+    def build_state(self, shape_text: str, previous: PreviousTop) -> dict:
+        """Exactly what Jev receives as `state`; the questions are static."""
+        return {
+            "traffic_shape": shape_text,
+            "previous_window_top_answers": previous.as_state(self._catalog_by_key) or "none yet",
+        }
+
+    def questions_json(self) -> dict:
+        return {k: q.model_dump(exclude_none=True) for k, q in self._questions.items()}
+
+    async def ask(self, vif: str, state: dict) -> Answer | None:
         """Return None if a call for this vif is already outstanding (tick dropped)."""
         if vif in self._busy:
             self.dropped[vif] = self.dropped.get(vif, 0) + 1
             return None
         self._busy.add(vif)
         try:
-            state = {
-                "traffic_shape": shape_text,
-                "previous_window_top_answers": previous.as_state(self._catalog_by_key) or "none yet",
-            }
             t0 = time.monotonic()
             resp = await self._client.system_one(state=state, questions=self._questions)
             latency = time.monotonic() - t0
@@ -173,9 +179,14 @@ class FakeJevClient:
 
     def __init__(self, catalog: list[Activity]) -> None:
         self._keys = [a.key for a in catalog]
+        self._catalog_by_key = {a.key: a for a in catalog}
+        self._questions = build_questions(catalog)
         self._busy: set[str] = set()
         self.dropped: dict[str, int] = {}
         self._i = 0
+
+    build_state = JevClient.build_state
+    questions_json = JevClient.questions_json
 
     async def close(self) -> None:
         return None
@@ -183,7 +194,7 @@ class FakeJevClient:
     def is_busy(self, vif: str) -> bool:
         return vif in self._busy
 
-    async def ask(self, vif: str, shape_text: str, previous: PreviousTop) -> Answer | None:
+    async def ask(self, vif: str, state: dict) -> Answer | None:
         if vif in self._busy:
             self.dropped[vif] = self.dropped.get(vif, 0) + 1
             return None
@@ -195,6 +206,7 @@ class FakeJevClient:
             top = self._keys[(self._i // 5) % n]
             probs = {k: 0.3 / n for k in self._keys}
             probs[top] += 0.7
+            shape_text = state.get("traffic_shape", "")
             quiet = "silent" in shape_text or "no packets" in shape_text
             return Answer(
                 probabilities=probs,

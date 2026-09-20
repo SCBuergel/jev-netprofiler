@@ -8,12 +8,17 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import socket
 import struct
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
+
+import psutil
 
 from .config import (
     ACTIVE_TIMEOUT,
@@ -62,6 +67,7 @@ def _streamer_kwargs() -> dict:
         n_dissections=0,  # no L7 dissection: shape only, and cheaper
         decode_tunnels=False,
         promiscuous_mode=False,
+        n_meters=1,  # one forked meter per interface, not one per CPU
     )
 
 
@@ -141,12 +147,14 @@ def nflow_to_seg(f, orienter: Orienter | None = None) -> FlowSeg:
         up_b, down_b = f.src2dst_bytes, f.dst2src_bytes
         up_piat, down_piat = s2d_piat, d2s_piat
         endpoint = f"{f.dst_ip}:{f.dst_port}/{f.protocol}"
+        local_port = int(f.src_port)
         splt_dir = list(f.splt_direction or [])
     else:
         up_p, down_p = f.dst2src_packets, f.src2dst_packets
         up_b, down_b = f.dst2src_bytes, f.src2dst_bytes
         up_piat, down_piat = d2s_piat, s2d_piat
         endpoint = f"{f.src_ip}:{f.src_port}/{f.protocol}"
+        local_port = int(f.dst_port)
         splt_dir = [1 - d if d in (0, 1) else d for d in (f.splt_direction or [])]
     return FlowSeg(
         key=key,
@@ -175,7 +183,138 @@ def nflow_to_seg(f, orienter: Orienter | None = None) -> FlowSeg:
         splt_direction=splt_dir,
         splt_ps=list(f.splt_ps or []),
         splt_piat_ms=list(f.splt_piat_ms or []),
+        local_port=local_port,
     )
+
+
+class OwnTraffic:
+    """Knows which flows belong to this process, so a capture of the qube's
+    own uplink can leave the profiler's Jev calls out.
+
+    Three sources: every socket this process connects (hooked at connect
+    time, so even a short-lived connection is recorded), a periodic snapshot
+    of open sockets, and the resolved addresses of the API host. Entries are
+    remembered for a while because a flow segment arrives after its socket
+    may have closed. DNS lookups go through the C resolver and are not seen;
+    they are rare (one per new connection) and tiny.
+    """
+
+    REMEMBER_S = 600.0
+    SNAPSHOT_S = 0.5
+    RESOLVE_S = 300.0
+
+    def __init__(self, api_host: str | None = None) -> None:
+        self.api_host = api_host or urlparse(os.environ.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai")).hostname or "api.typesafe.ai"
+        self._seen: dict[tuple[int, int, str], float] = {}  # tuple4 -> last seen
+        self._api_ips: set[str] = set()
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="own-traffic", daemon=True)
+        self.excluded = 0
+
+    _hooked = False
+
+    def start(self) -> None:
+        self._install_connect_hook()
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _record(self, sock: socket.socket) -> None:
+        try:
+            if sock.family not in (socket.AF_INET, socket.AF_INET6):
+                return
+            proto = 6 if sock.type == socket.SOCK_STREAM else 17
+            lport = sock.getsockname()[1]
+            rip, rport = sock.getpeername()[:2]
+        except OSError:
+            return
+        with self._lock:
+            self._seen[(proto, lport, f"{rip}:{rport}/{proto}")] = time.time()
+
+    def _install_connect_hook(self) -> None:
+        """Wrap socket.connect/connect_ex process-wide (asyncio's sock_connect
+        ends up here too). Only the profiler's own process is affected."""
+        if OwnTraffic._hooked:
+            return
+        OwnTraffic._hooked = True
+        me = self
+        orig_connect, orig_connect_ex = socket.socket.connect, socket.socket.connect_ex
+
+        def connect(sock, address):
+            try:
+                return orig_connect(sock, address)
+            finally:
+                me._record(sock)
+
+        def connect_ex(sock, address):
+            try:
+                return orig_connect_ex(sock, address)
+            finally:
+                me._record(sock)
+
+        socket.socket.connect = connect  # type: ignore[method-assign]
+        socket.socket.connect_ex = connect_ex  # type: ignore[method-assign]
+
+    def _run(self) -> None:
+        proc = psutil.Process()
+        next_resolve = 0.0
+        while not self._stop.is_set():
+            now = time.time()
+            if now >= next_resolve:
+                try:
+                    ips = {ai[4][0] for ai in socket.getaddrinfo(self.api_host, 443, proto=socket.IPPROTO_TCP)}
+                    with self._lock:
+                        self._api_ips = ips
+                except OSError:
+                    pass
+                next_resolve = now + self.RESOLVE_S
+            try:
+                conns = proc.net_connections(kind="inet")
+            except (psutil.Error, OSError):
+                conns = []
+            with self._lock:
+                for c in conns:
+                    if not c.raddr or not c.laddr:
+                        continue
+                    proto = 6 if c.type == socket.SOCK_STREAM else 17
+                    self._seen[(proto, c.laddr.port, f"{c.raddr.ip}:{c.raddr.port}/{proto}")] = now
+                if len(self._seen) > 10_000:
+                    cutoff = now - self.REMEMBER_S
+                    self._seen = {k: v for k, v in self._seen.items() if v >= cutoff}
+            self._stop.wait(self.SNAPSHOT_S)
+
+    def is_own(self, seg: FlowSeg) -> bool:
+        with self._lock:
+            if seg.tuple4 in self._seen:
+                return True
+            ip = seg.endpoint.rsplit(":", 1)[0]
+            port = seg.endpoint.rsplit(":", 1)[1].split("/")[0]
+            return ip in self._api_ips and port == "443"
+
+
+class SharedFlows:
+    """Flows seen on vif captures, so a simultaneous eth0 capture can drop the
+    NAT'd copies of downstream traffic and keep only the qube's own."""
+
+    REMEMBER_S = 300.0
+
+    def __init__(self) -> None:
+        self._seen: dict[tuple[int, int, str], float] = {}
+        self._lock = threading.Lock()
+
+    def note(self, seg: FlowSeg) -> None:
+        with self._lock:
+            self._seen[seg.tuple4] = time.time()
+            if len(self._seen) > 50_000:
+                cutoff = time.time() - self.REMEMBER_S
+                self._seen = {k: v for k, v in self._seen.items() if v >= cutoff}
+
+    def seen(self, seg: FlowSeg) -> bool:
+        with self._lock:
+            ts = self._seen.get(seg.tuple4)
+        return ts is not None and time.time() - ts <= self.REMEMBER_S
 
 
 class Heartbeat:
@@ -219,12 +358,13 @@ class Heartbeat:
 class VifCapture:
     """One NFStreamer on one vif, iterated in a daemon thread into a window."""
 
-    def __init__(self, iface: str, window: RollingWindow, local_nets: list[str] | None = None, heartbeat: bool = True) -> None:
+    def __init__(self, iface: str, window: RollingWindow, local_nets: list[str] | None = None, heartbeat: bool = True, shared: SharedFlows | None = None) -> None:
         if iface in FORBIDDEN_INTERFACES or iface.startswith("eth"):
             raise ValueError(f"refusing to capture on {iface}")
         self.iface = iface
         self.window = window
         self.local_nets = local_nets
+        self.shared = shared
         self.error: str | None = None
         self.alive = False
         self._stop = threading.Event()
@@ -253,12 +393,97 @@ class VifCapture:
                     break
                 if is_heartbeat(flow):
                     continue
-                self.window.add(nflow_to_seg(flow, orienter))
+                seg = nflow_to_seg(flow, orienter)
+                if self.shared is not None:
+                    self.shared.note(seg)
+                self.window.add(seg)
         except Exception as e:  # interface vanished, permission, libpcap...
             self.error = str(e)
             log.warning("capture on %s stopped: %s", self.iface, e)
         finally:
             self.alive = False
+
+
+class SelfCapture:
+    """Capture the qube's own uplink (eth0) for the qube's own applications.
+
+    Opt-in only. The profiler's own flows are excluded via `OwnTraffic`; when
+    vif captures run at the same time, flows they have seen are excluded too,
+    so downstream NAT'd traffic is not counted twice. Segments are held for
+    HOLD_S before entering the window so the vif copy has time to register.
+    No heartbeat: the profiler's own calls keep the meter clock moving.
+    """
+
+    HOLD_S = 1.5
+
+    def __init__(self, window: RollingWindow, own: OwnTraffic, shared: SharedFlows | None, iface: str = "eth0", include_own: bool = False) -> None:
+        self.iface = iface
+        self.window = window
+        self.own = own
+        self.shared = shared
+        self.include_own = include_own
+        self.error: str | None = None
+        self.alive = False
+        self.excluded_own = 0
+        self.excluded_downstream = 0
+        self._pending: deque[tuple[float, FlowSeg]] = deque()
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name=f"nfstream-self-{iface}", daemon=True)
+
+    @staticmethod
+    def local_addresses(iface: str) -> list[str]:
+        out = []
+        for a in psutil.net_if_addrs().get(iface, []):
+            if a.family in (socket.AF_INET, socket.AF_INET6) and a.address:
+                out.append(a.address.split("%")[0] + ("/32" if a.family == socket.AF_INET else "/128"))
+        return out
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        from nfstream import NFStreamer
+
+        self.alive = True
+        orienter = Orienter(self.local_addresses(self.iface))
+        try:
+            for flow in NFStreamer(source=self.iface, **_streamer_kwargs()):
+                if self._stop.is_set():
+                    break
+                if is_heartbeat(flow):
+                    continue
+                seg = nflow_to_seg(flow, orienter)
+                if not self.include_own and self.own.is_own(seg):
+                    self.excluded_own += 1
+                    continue
+                with self._lock:
+                    self._pending.append((time.time(), seg))
+        except Exception as e:
+            self.error = str(e)
+            log.warning("self capture on %s stopped: %s", self.iface, e)
+        finally:
+            self.alive = False
+
+    def flush(self, hold: bool) -> None:
+        """Move held segments into the window; called on every engine tick.
+        Holding (and the matching extra window lag) is only needed while vif
+        captures run alongside, so their copy of a flow can register first."""
+        from .config import TICK_SECONDS
+
+        extra = int((self.HOLD_S + TICK_SECONDS) * 1000) if hold else 0
+        self.window.lag_ms = RollingWindow.LAG_MS + extra
+        cutoff = time.time() - (self.HOLD_S if hold else 0.0)
+        with self._lock:
+            while self._pending and self._pending[0][0] <= cutoff:
+                _, seg = self._pending.popleft()
+                if hold and self.shared is not None and self.shared.seen(seg):
+                    self.excluded_downstream += 1
+                    continue
+                self.window.add(seg)
 
 
 class PcapReplay:
@@ -328,14 +553,37 @@ class PcapReplay:
 class CaptureManager:
     """Owns windows and captures; rescans for new vifs on demand."""
 
+    SELF_NAME = "self"
+
     def __init__(self, explicit: list[str] | None = None, local_nets: list[str] | None = None, heartbeat: bool = True) -> None:
         self.explicit = explicit or None
         self.local_nets = local_nets or None
         self.heartbeat = heartbeat
         self.windows: dict[str, RollingWindow] = {}
-        self.captures: dict[str, VifCapture | PcapReplay] = {}
+        self.captures: dict[str, VifCapture | PcapReplay | SelfCapture] = {}
+        self.shared = SharedFlows()
+        self.own: OwnTraffic | None = None
         self._last_scan = 0.0
         self.on_new_vif: Callable[[str], None] | None = None
+
+    def add_self(self, include_own: bool = False, iface: str = "eth0") -> None:
+        """Profile this qube's own applications on its uplink."""
+        self.own = OwnTraffic()
+        self.own.start()
+        w = RollingWindow()
+        self.windows[self.SELF_NAME] = w
+        cap = SelfCapture(w, self.own, self.shared, iface=iface, include_own=include_own)
+        self.captures[self.SELF_NAME] = cap
+        cap.start()
+        log.info("capturing this qube's own traffic on %s (profiler's own flows excluded: %s)", iface, not include_own)
+        if self.on_new_vif:
+            self.on_new_vif(self.SELF_NAME)
+
+    def flush(self) -> None:
+        has_vifs = any(isinstance(c, VifCapture) for c in self.captures.values())
+        for c in self.captures.values():
+            if isinstance(c, SelfCapture):
+                c.flush(hold=has_vifs)
 
     def add_pcap(self, pcap: Path, speed: float, loop: bool, name: str = "pcap") -> None:
         w = RollingWindow()
@@ -359,7 +607,7 @@ class CaptureManager:
             if cap is not None and cap.error is not None:
                 log.info("restarting capture on %s after error", iface)
             w = self.windows.setdefault(iface, RollingWindow())
-            vc = VifCapture(iface, w, local_nets=self.local_nets, heartbeat=self.heartbeat)
+            vc = VifCapture(iface, w, local_nets=self.local_nets, heartbeat=self.heartbeat, shared=self.shared)
             self.captures[iface] = vc
             vc.start()
             log.info("capturing on %s", iface)
@@ -371,3 +619,5 @@ class CaptureManager:
     def stop_all(self) -> None:
         for c in self.captures.values():
             c.stop()
+        if self.own:
+            self.own.stop()

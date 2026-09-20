@@ -13,6 +13,10 @@
 # The API key is taken from TYPESAFE_API_KEY, else from ./.env, else you are
 # asked to edit the env file afterwards.
 #
+# Options:
+#     SELF=0              do not profile this qube's own applications on eth0
+#                         (default SELF=1: the service runs with --self as well
+#                         as capturing any vif*; its own Jev traffic is excluded)
 # Overrides (for testing or unusual layouts):
 #     DEST=/some/dir      install location   (default /rw/config/netprofiler)
 #     RC_LOCAL=/some/file rc.local to hook    (default /rw/config/rc.local)
@@ -23,7 +27,9 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST="${DEST:-/rw/config/netprofiler}"
 RC_LOCAL="${RC_LOCAL:-/rw/config/rc.local}"
 NO_SYSTEMD="${NO_SYSTEMD:-}"
+SELF="${SELF:-1}"
 UNIT=netprofiler.service
+SELF_FLAG=""; [ "$SELF" = "1" ] && SELF_FLAG=" --self"
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 step() { echo ">> $*"; }
@@ -107,7 +113,7 @@ Type=simple
 EnvironmentFile=$DEST/env
 WorkingDirectory=$DEST
 RuntimeDirectory=netprofiler
-ExecStart=$DEST/venv/bin/netprofiler --headless --quiet --catalog $DEST/activities.yaml --state-file /run/netprofiler/state.json
+ExecStart=$DEST/venv/bin/netprofiler --headless --quiet$SELF_FLAG --catalog $DEST/activities.yaml --state-file /run/netprofiler/state.json
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM
@@ -157,7 +163,8 @@ VIFS="$(ls /sys/class/net 2>/dev/null | grep '^vif' | tr '\n' ' ' || true)"
 if [ -n "$VIFS" ]; then
     echo "downstream interfaces now: $VIFS"
 else
-    echo "no vif* interfaces yet: nothing is using this qube as its NetVM. Start a qube"
-    echo "whose NetVM is this one and a vif appears; the service picks it up within a few seconds."
+    echo "no vif* interfaces: nothing is using this qube as its NetVM. Start a qube whose"
+    echo "NetVM is this one and a vif appears; the service picks it up within a few seconds."
 fi
+[ "$SELF" = "1" ] && echo "this qube's own applications are profiled too (pane 'self'); SELF=0 ./install.sh turns that off"
 echo "watch it:  sudo $DEST/venv/bin/netprofiler --attach /run/netprofiler/state.json"

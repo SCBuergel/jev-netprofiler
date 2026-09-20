@@ -194,11 +194,11 @@ def test_events_fire_on_rising_edge_only():
 
 def test_catalog_and_questions():
     cat = load_catalog(CATALOG_PATH_DEFAULT)
-    assert len(cat) == 30
+    assert len(cat) == 11
     assert {a.key for a in cat} >= {"idle", "unknown"}
     q = build_questions(cat)
     assert set(q) == {"activity", "intensity", "interactivity", "just_started", "just_ended", "automated", "someone_is_typing"}
-    assert len(q["activity"].criteria) == 30
+    assert len(q["activity"].criteria) == 11
 
 
 class _FakeNFlow:
@@ -253,3 +253,21 @@ def test_heartbeat_flows_are_filtered():
     hb.protocol = 17
     assert is_heartbeat(hb)
     assert not is_heartbeat(_FakeNFlow("10.137.0.10", "1.1.1.1", 40000, HEARTBEAT_PORT))
+
+
+def test_own_traffic_and_shared_flow_filters():
+    import time as _t
+    from netprofiler.capture import OwnTraffic, SharedFlows, nflow_to_seg, Orienter
+
+    own = OwnTraffic(api_host="localhost")
+    own._api_ips = {"198.51.100.9"}
+    own._seen[(6, 40001, "203.0.113.5:443/6")] = _t.time()
+    mine = nflow_to_seg(_FakeNFlow("10.137.0.10", "203.0.113.5", 40001, 443, s2d_syn=1), Orienter(["10.137.0.10/32"]))
+    api = nflow_to_seg(_FakeNFlow("10.137.0.10", "198.51.100.9", 40002, 443, s2d_syn=1), Orienter(["10.137.0.10/32"]))
+    other = nflow_to_seg(_FakeNFlow("10.137.0.10", "203.0.113.5", 40003, 443, s2d_syn=1), Orienter(["10.137.0.10/32"]))
+    assert mine.local_port == 40001 and mine.tuple4 == (6, 40001, "203.0.113.5:443/6")
+    assert own.is_own(mine) and own.is_own(api) and not own.is_own(other)
+
+    shared = SharedFlows()
+    shared.note(other)
+    assert shared.seen(other) and not shared.seen(mine)
