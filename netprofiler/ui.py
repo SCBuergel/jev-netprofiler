@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -184,6 +185,13 @@ class ProfilerApp(App):
         panes = self.query_one("#panes", Horizontal)
         empty = self.query_one("#empty", Static)
         empty.display = not vifs
+        if not vifs:
+            if snap.get("_missing"):
+                empty.update(f"no state file at {snap['_missing']}\nis the service running?  systemctl status netprofiler")
+            elif snap.get("t") and time.time() - snap["t"] > 10:
+                empty.update(f"state file is {time.time() - snap['t']:.0f} s old: the service has stopped writing\njournalctl -u netprofiler")
+            else:
+                empty.update("service running, no vif* interfaces yet\nnothing uses this qube as its NetVM; start a qube that does")
         for vif in vifs:
             if not panes.query(f"#{pane_id(vif)}"):
                 panes.mount(VifPane(vif))
@@ -213,6 +221,6 @@ def file_provider(path: Path) -> SnapshotProvider:
         try:
             return json.loads(path.read_text())
         except FileNotFoundError:
-            return {"vifs": {}}
+            return {"vifs": {}, "_missing": str(path)}
 
     return read

@@ -26,6 +26,7 @@ NO_SYSTEMD="${NO_SYSTEMD:-}"
 UNIT=netprofiler.service
 
 die() { echo "install.sh: $*" >&2; exit 1; }
+step() { echo ">> $*"; }
 
 if [ -z "$NO_SYSTEMD" ] && [ "$(id -u)" -ne 0 ]; then
     die "run as root (sudo ./install.sh), or set NO_SYSTEMD=1 for a user-only install"
@@ -51,6 +52,7 @@ MSG
 fi
 
 # --- files -------------------------------------------------------------------
+step "copying files to $DEST"
 mkdir -p "$DEST"
 rm -rf "$DEST/netprofiler"
 cp -r "$SRC/netprofiler" "$DEST/"
@@ -59,6 +61,7 @@ mkdir -p "$DEST/tools" && cp "$SRC/tools/fake_qube.py" "$DEST/tools/"
 find "$DEST/netprofiler" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
 
 # --- API key -----------------------------------------------------------------
+step "API key: $DEST/env"
 if [ ! -f "$DEST/env" ]; then
     if [ -n "${TYPESAFE_API_KEY:-}" ]; then
         printf 'TYPESAFE_API_KEY=%s\n' "$TYPESAFE_API_KEY" > "$DEST/env"
@@ -73,21 +76,27 @@ chmod 600 "$DEST/env"
 
 # --- venv --------------------------------------------------------------------
 if [ -n "$UV" ]; then
+    step "creating venv with uv ($UV)"
     [ -x "$DEST/venv/bin/python" ] || "$UV" venv -q -p python3 "$DEST/venv"
-    "$UV" pip install -q -p "$DEST/venv/bin/python" "$DEST"
+    step "installing dependencies (nfstream, numpy, pandas, textual, typesafe-sdk; about 100 MB of wheels)"
+    "$UV" pip install -p "$DEST/venv/bin/python" "$DEST" 2>&1 | grep -E '^(Resolved|Prepared|Installed|error|  ×|  ╰)' || true
 else
+    step "creating venv with python3 -m venv"
     # a venv left over from a failed attempt may exist without pip: rebuild it
     if ! "$DEST/venv/bin/python" -m pip --version >/dev/null 2>&1; then
         rm -rf "$DEST/venv"
         python3 -m venv "$DEST/venv" || die "python3 -m venv failed"
     fi
+    step "installing dependencies (nfstream, numpy, pandas, textual, typesafe-sdk; about 100 MB of wheels)"
     "$DEST/venv/bin/python" -m pip install --quiet --upgrade pip
-    "$DEST/venv/bin/python" -m pip install --quiet "$DEST"
+    "$DEST/venv/bin/python" -m pip install --progress-bar off "$DEST" 2>&1 | grep -E '^(Collecting|Downloading|Successfully|ERROR)' || true
 fi
 "$DEST/venv/bin/netprofiler" --help > /dev/null || die "installed package does not run"
+step "installed package runs"
 rm -rf "$DEST/build" "$DEST"/*.egg-info
 
 # --- systemd unit --------------------------------------------------------------
+step "writing $DEST/$UNIT"
 cat > "$DEST/$UNIT" <<EOF
 [Unit]
 Description=Qubes net-qube traffic profiler (nfstream + Jev)
@@ -116,6 +125,7 @@ WantedBy=multi-user.target
 EOF
 
 # --- rc.local hook (idempotent) ------------------------------------------------
+step "hooking $RC_LOCAL"
 mkdir -p "$(dirname "$RC_LOCAL")"
 touch "$RC_LOCAL"
 if ! grep -q "$DEST/$UNIT" "$RC_LOCAL"; then
@@ -133,13 +143,21 @@ chmod +x "$RC_LOCAL"
 
 # --- start now ----------------------------------------------------------------
 if [ -z "$NO_SYSTEMD" ]; then
+    step "starting $UNIT"
     ln -sf "$DEST/$UNIT" "/etc/systemd/system/$UNIT"
     systemctl daemon-reload
     systemctl restart "$UNIT"
-    sleep 1
-    systemctl --no-pager --lines=0 status "$UNIT" | head -3
+    sleep 2
+    systemctl --no-pager --lines=0 status "$UNIT" | sed -n '1,3p'
+    journalctl -u "$UNIT" --no-pager -n 3 -o cat --since '-30s' 2>/dev/null | sed 's/^/   /'
 fi
 
 echo
-echo "installed to $DEST"
+VIFS="$(ls /sys/class/net 2>/dev/null | grep '^vif' | tr '\n' ' ' || true)"
+if [ -n "$VIFS" ]; then
+    echo "downstream interfaces now: $VIFS"
+else
+    echo "no vif* interfaces yet: nothing is using this qube as its NetVM. Start a qube"
+    echo "whose NetVM is this one and a vif appears; the service picks it up within a few seconds."
+fi
 echo "watch it:  sudo $DEST/venv/bin/netprofiler --attach /run/netprofiler/state.json"

@@ -82,7 +82,8 @@ class Engine:
         if self.settings.pcap:
             self.capture.add_pcap(self.settings.pcap, self.settings.pcap_speed, loop=False)
         else:
-            self.capture.scan(force=True)
+            if not self.capture.scan(force=True):
+                log.info("no vif* interfaces yet (no qube uses this one as NetVM); rescanning every few seconds")
 
     async def run(self) -> None:
         self.start_capture()

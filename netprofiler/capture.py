@@ -362,6 +362,7 @@ class CaptureManager:
             vc = VifCapture(iface, w, local_nets=self.local_nets, heartbeat=self.heartbeat)
             self.captures[iface] = vc
             vc.start()
+            log.info("capturing on %s", iface)
             added.append(iface)
             if self.on_new_vif:
                 self.on_new_vif(iface)
