@@ -271,3 +271,36 @@ def test_own_traffic_and_shared_flow_filters():
     shared = SharedFlows()
     shared.note(other)
     assert shared.seen(other) and not shared.seen(mine)
+
+
+def test_probe_filter():
+    from netprofiler.capture import is_probe
+
+    scan = _FakeNFlow("185.139.214.221", "10.137.0.10", 47173, 27017, s2d_syn=1)
+    scan.src2dst_packets, scan.dst2src_packets, scan.bidirectional_rst_packets = 1, 1, 1
+    scan.bidirectional_packets = 2
+    assert is_probe(scan, local_is_src=False)
+    login = _FakeNFlow("203.0.113.5", "10.137.0.10", 50000, 22, s2d_syn=1)
+    login.bidirectional_packets = 400
+    assert not is_probe(login, local_is_src=False)
+    ping = _FakeNFlow("3.249.179.191", "10.137.0.10", 0, 0)
+    ping.protocol = 1
+    assert is_probe(ping, local_is_src=False)
+    udp_lone = _FakeNFlow("198.51.100.1", "10.137.0.10", 5000, 5060)
+    udp_lone.protocol, udp_lone.bidirectional_packets, udp_lone.src2dst_packets, udp_lone.dst2src_packets = 17, 1, 1, 0
+    assert is_probe(udp_lone, local_is_src=False)
+    own_udp = _FakeNFlow("10.137.0.10", "198.51.100.1", 5000, 53)
+    own_udp.protocol, own_udp.bidirectional_packets = 17, 2
+    assert not is_probe(own_udp, local_is_src=True)
+
+
+def test_burst_spacing_levels():
+    # four bursts 2 s apart -> regular; then uneven -> irregular
+    regular = [seg(f"r{i}>1.1.1.1:443/6", START + 2000 * i, START + 2000 * i + 300, 5, 5, 500, 500) for i in range(4)]
+    m = measure(regular, 0, END)
+    assert m.bursts == 4 and 0 <= m.burst_gap_cv < 0.25
+    assert "clock-like" in describe(m).burst_spacing
+    uneven = [seg(f"u{i}>1.1.1.1:443/6", START + t, START + t + 300, 5, 5, 500, 500) for i, t in enumerate((0, 700, 4200, 5000, 9000))]
+    m2 = measure(uneven, 0, END)
+    assert m2.burst_gap_cv >= 0.6
+    assert "irregular" in describe(m2).burst_spacing

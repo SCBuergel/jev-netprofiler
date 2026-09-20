@@ -134,6 +134,27 @@ def is_heartbeat(f) -> bool:
     return f.protocol == 17 and f.dst_port == HEARTBEAT_PORT and f.dst_ip == HEARTBEAT_GROUP
 
 
+def is_probe(f, local_is_src: bool) -> bool:
+    """Unsolicited inbound noise a public address attracts: port scans that
+    get a reset, lone inbound UDP packets nobody answered, and pings. None of
+    it is the machine's own activity, so it is dropped before the window."""
+    if f.protocol in (1, 58):  # ICMP / ICMPv6
+        return True
+    packets = int(f.bidirectional_packets or 0)
+    if packets > 4:
+        return False
+    syn_local = int((f.src2dst_syn_packets if local_is_src else f.dst2src_syn_packets) or 0)
+    syn_remote = int((f.dst2src_syn_packets if local_is_src else f.src2dst_syn_packets) or 0)
+    local_packets = int(f.src2dst_packets if local_is_src else f.dst2src_packets)
+    if f.protocol == 6:
+        remote_initiated = syn_remote > 0 and syn_local == 0
+        return remote_initiated and int(f.bidirectional_rst_packets or 0) > 0
+    if f.protocol == 17:
+        remote_first = not local_is_src  # src is whoever sent the first packet
+        return remote_first and local_packets == 0
+    return False
+
+
 def nflow_to_seg(f, orienter: Orienter | None = None) -> FlowSeg:
     """Project an nfstream NFlow onto the shape-only FlowSeg, oriented so that
     `up` always means the downstream qube sending outwards."""
@@ -391,7 +412,7 @@ class VifCapture:
             for flow in streamer:
                 if self._stop.is_set():
                     break
-                if is_heartbeat(flow):
+                if is_heartbeat(flow) or is_probe(flow, orienter.local_is_src(flow, orienter.key(flow))):
                     continue
                 seg = nflow_to_seg(flow, orienter)
                 if self.shared is not None:
@@ -426,6 +447,7 @@ class SelfCapture:
         self.alive = False
         self.excluded_own = 0
         self.excluded_downstream = 0
+        self.excluded_probes = 0
         self._pending: deque[tuple[float, FlowSeg]] = deque()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -455,6 +477,9 @@ class SelfCapture:
                 if self._stop.is_set():
                     break
                 if is_heartbeat(flow):
+                    continue
+                if is_probe(flow, orienter.local_is_src(flow, orienter.key(flow))):
+                    self.excluded_probes += 1
                     continue
                 seg = nflow_to_seg(flow, orienter)
                 if not self.include_own and self.own.is_own(seg):
@@ -520,7 +545,11 @@ class PcapReplay:
             while not self._stop.is_set():
                 # nfstream emits flows in expiry order; sort by last_seen to be safe
                 orienter = Orienter(self.local_nets)
-                segs = [nflow_to_seg(f, orienter) for f in NFStreamer(source=str(self.pcap), **_streamer_kwargs())]
+                segs = [
+                    nflow_to_seg(f, orienter)
+                    for f in NFStreamer(source=str(self.pcap), **_streamer_kwargs())
+                    if not is_probe(f, orienter.local_is_src(f, orienter.key(f)))
+                ]
                 segs.sort(key=lambda s: s.last_ms)
                 if not segs:
                     self.error = "pcap produced no flows"

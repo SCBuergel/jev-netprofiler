@@ -146,7 +146,7 @@ class Engine:
                 s.status = "replay finished"
             excluded = getattr(cap, "excluded_own", None)
             if excluded is not None:
-                s.excluded = f"own {excluded}" + (f" downstream {cap.excluded_downstream}" if cap.excluded_downstream else "")
+                s.excluded = f"own {excluded} probes {cap.excluded_probes}" + (f" downstream {cap.excluded_downstream}" if cap.excluded_downstream else "")
             if self.client.is_busy(vif):
                 s.analysis.note_dropped()
                 s.status = "dropped tick (call in flight)"

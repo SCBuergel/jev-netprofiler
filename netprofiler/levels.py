@@ -122,6 +122,15 @@ def idle_gap_count(n: int) -> str:
     return _bucket(n, [(1, "none"), (2, "one"), (4, "a few")], "many")
 
 
+def burst_spacing(gap_cv: float, bursts: int) -> str:
+    """Regularity of the pauses between bursts (as opposed to between packets)."""
+    if bursts <= 1:
+        return "as a single burst or continuously, so spacing does not apply"
+    if gap_cv < 0:
+        return "too rarely to judge their spacing"
+    return _bucket(gap_cv, [(0.25, "at clock-like regular intervals"), (0.6, "at fairly regular intervals")], "at irregular, human-looking intervals")
+
+
 def transport_mix(tcp_frac: float, udp_frac: float) -> str:
     if tcp_frac > 0.9:
         return "almost all TCP"
