@@ -7,8 +7,9 @@
 # the systemd unit, hooks /rw/config/rc.local so the unit is re-linked at every
 # boot (an AppVM's /etc is not persistent), and starts the service.
 #
-# Needs: python3 >= 3.11 (plus uv or the venv module), libpcap, and network
-# access to fetch wheels.
+# Needs python3 >= 3.11 that can create a venv with pip (Debian: the
+# python3-venv package in the template), or uv in the qube, plus network
+# access to fetch wheels. libpcap is bundled in the nfstream wheel.
 # The API key is taken from TYPESAFE_API_KEY, else from ./.env, else you are
 # asked to edit the env file afterwards.
 #
@@ -24,8 +25,28 @@ RC_LOCAL="${RC_LOCAL:-/rw/config/rc.local}"
 NO_SYSTEMD="${NO_SYSTEMD:-}"
 UNIT=netprofiler.service
 
+die() { echo "install.sh: $*" >&2; exit 1; }
+
 if [ -z "$NO_SYSTEMD" ] && [ "$(id -u)" -ne 0 ]; then
-    echo "run as root (sudo ./install.sh), or set NO_SYSTEMD=1 for a user-only install" >&2
+    die "run as root (sudo ./install.sh), or set NO_SYSTEMD=1 for a user-only install"
+fi
+
+# --- preflight ---------------------------------------------------------------
+command -v python3 >/dev/null || die "python3 not found; install python3 in the template"
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
+    || die "python3 >= 3.11 required, found $(python3 --version 2>&1)"
+# uv if available (also under the invoking user's home when run via sudo),
+# else python3 -m venv, which on Debian needs python3-venv for pip.
+UV="$(command -v uv || true)"
+[ -z "$UV" ] && [ -n "${SUDO_USER:-}" ] && [ -x "/home/$SUDO_USER/.local/bin/uv" ] && UV="/home/$SUDO_USER/.local/bin/uv"
+if [ -z "$UV" ] && ! python3 -c 'import ensurepip' 2>/dev/null; then
+    cat >&2 <<'MSG'
+install.sh: python3 cannot create a venv with pip (no ensurepip module).
+  Either, in the template:   sudo apt install python3-venv
+          then shut the template down and restart this qube,
+  or, in this qube only:     curl -LsSf https://astral.sh/uv/install.sh | sh
+          then run install.sh again.
+MSG
     exit 1
 fi
 
@@ -51,19 +72,19 @@ fi
 chmod 600 "$DEST/env"
 
 # --- venv --------------------------------------------------------------------
-# uv if available (also under the invoking user's home when run via sudo),
-# else python3 -m venv (needs the python3-venv package on Debian templates).
-UV="$(command -v uv || true)"
-[ -z "$UV" ] && [ -n "${SUDO_USER:-}" ] && [ -x "/home/$SUDO_USER/.local/bin/uv" ] && UV="/home/$SUDO_USER/.local/bin/uv"
 if [ -n "$UV" ]; then
-    [ -x "$DEST/venv/bin/python" ] || "$UV" venv -q "$DEST/venv"
+    [ -x "$DEST/venv/bin/python" ] || "$UV" venv -q -p python3 "$DEST/venv"
     "$UV" pip install -q -p "$DEST/venv/bin/python" "$DEST"
 else
-    [ -x "$DEST/venv/bin/python" ] || python3 -m venv "$DEST/venv"
+    # a venv left over from a failed attempt may exist without pip: rebuild it
+    if ! "$DEST/venv/bin/python" -m pip --version >/dev/null 2>&1; then
+        rm -rf "$DEST/venv"
+        python3 -m venv "$DEST/venv" || die "python3 -m venv failed"
+    fi
     "$DEST/venv/bin/python" -m pip install --quiet --upgrade pip
     "$DEST/venv/bin/python" -m pip install --quiet "$DEST"
 fi
-"$DEST/venv/bin/netprofiler" --help > /dev/null
+"$DEST/venv/bin/netprofiler" --help > /dev/null || die "installed package does not run"
 rm -rf "$DEST/build" "$DEST"/*.egg-info
 
 # --- systemd unit --------------------------------------------------------------

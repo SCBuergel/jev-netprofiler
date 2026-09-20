@@ -45,7 +45,25 @@ which makes them an upper bound.
 
 ## Install on the net-qube
 
+The qube's template needs python3 3.11 or newer with the venv module, and
+git to clone with. On a Debian template:
+
 ```sh
+sudo apt install python3 python3-venv git
+```
+
+then shut the template down and restart the net-qube. libpcap is bundled in
+the nfstream wheel, so no capture library is needed. If you would rather not
+touch the template, install uv in the qube's home instead
+(`curl -LsSf https://astral.sh/uv/install.sh | sh`); the installer uses it
+when present.
+
+In the qube:
+
+```sh
+git clone https://github.com/SCBuergel/jev-netprofiler.git
+cd jev-netprofiler
+echo 'TYPESAFE_API_KEY=...' > .env
 sudo ./install.sh
 ```
 
@@ -64,8 +82,8 @@ transitions to the journal. To watch it:
 sudo /rw/config/netprofiler/venv/bin/netprofiler --attach /run/netprofiler/state.json
 ```
 
-Template requirements: python3 3.11 or newer, libpcap. A disposable net-qube
-has no persistent `/rw`; install into its template instead.
+A disposable net-qube has no persistent `/rw`; install into its template
+instead.
 
 ## Run by hand
 
