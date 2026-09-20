@@ -1,0 +1,107 @@
+# Activity catalog for the net-qube traffic profiler.
+#
+# Each entry is an option in one Jev Choice question. `name` is shown in the
+# UI; `shape` is the one-line description Jev sees. Describe traffic *shape*
+# in the reducer's vocabulary (flows, endpoints, direction, bursts, packet
+# sizes, spacing, idle gaps, transport) and never mention ports, hosts or
+# protocol names in the shape line. Up to 255 entries.
+#
+# Keep "idle" and "unknown" so the model always has a no-match outcome.
+#
+# Timing note: the window is ten seconds long, so anything that happens once
+# per twelve-second slot appears as a single short burst in most windows and
+# none in some.
+
+activities:
+  - name: idle
+    shape: Silent or nearly silent link; at most a few tiny keepalive packets with long idle gaps and no bursts.
+
+  - name: unknown
+    shape: Traffic is present but its shape matches none of the other described activities.
+
+  # --- everyday, for contrast ------------------------------------------------
+  - name: web browsing
+    shape: Short bursts of many new short-lived flows to several endpoints, download-dominated with mixed packet sizes, separated by idle gaps of human reading pauses.
+
+  - name: social media scrolling
+    shape: Repeated short download-dominated bursts of medium and large packets every few seconds to a few endpoints, with brief human pauses between them.
+
+  - name: video streaming
+    shape: Few long-lived flows, download-dominated, MTU-sized packets in sustained regular bursts with brief gaps, almost all TCP, no human rhythm.
+
+  - name: music streaming
+    shape: One long-lived download-leaning flow with periodic short bursts of large packets separated by noticeable idle gaps; low overall volume.
+
+  - name: video call
+    shape: Continuously active, roughly balanced UDP flows of medium packets at a clock-like regular rapid rate, no idle gaps, no human rhythm in the packet timing.
+
+  - name: voice call
+    shape: Continuously active balanced UDP flow of small packets at a clock-like regular rate; low volume; no idle gaps.
+
+  - name: screen sharing
+    shape: Continuously active upload-dominated flow of large packets in irregular bursts that follow screen changes; one or two endpoints.
+
+  - name: instant messaging
+    shape: Sporadic tiny bursts of small packets to one or two endpoints at irregular human intervals with long idle gaps between them; very low volume.
+
+  - name: typing in a web app
+    shape: A single long-lived flow with tiny outbound packets at a keystroke-like uneven rhythm answered by tiny replies; occasional slightly larger save bursts.
+
+  - name: ssh interactive session
+    shape: A single long-lived balanced flow of tiny packets in a keystroke-like uneven human rhythm with tight request/response ping-pong and idle pauses.
+
+  - name: large file download
+    shape: One dominant long-lived flow, almost entirely download, MTU-sized packets back-to-back, continuously active at very high volume, no human rhythm.
+
+  - name: large file upload
+    shape: One dominant long-lived flow, almost entirely upload, MTU-sized outbound packets back-to-back, continuously active at high volume.
+
+  - name: package manager install
+    shape: A burst of many new short-lived download flows to a few endpoints, then one or more sustained high-volume downloads; machine-like pacing throughout.
+
+  - name: dependency fetch (npm, cargo, pip)
+    shape: Many short-lived download flows to several endpoints opening in rapid machine-like succession with no human pauses, mixed packet sizes, steady connection churn.
+
+  - name: torrent transfer
+    shape: A very large number of concurrent flows to many new endpoints, mixed TCP and UDP, roughly balanced bytes, mixed packet sizes, continuously active.
+
+  # --- privacy tooling ---------------------------------------------------------
+  - name: vpn or tunnel
+    shape: A single long-lived UDP flow to one endpoint carrying everything; mixed packet sizes and bursty timing that mirrors whatever runs inside it.
+
+  - name: tor browsing
+    shape: A few long-lived TCP flows to a few endpoints carrying everything; packet sizes unusually uniform and medium-sized; bursts and reading pauses of web browsing underneath.
+
+  - name: mixnet node with cover traffic
+    shape: Several long-lived flows to several endpoints, roughly balanced, small to medium packets of uniform size at a steady clock-like rate that does not change with activity; continuously active, no idle gaps, no human rhythm.
+
+  # --- ethereum ----------------------------------------------------------------
+  - name: ethereum node initial sync
+    shape: Many long-lived flows to many endpoints, download-dominated at very high volume, large packets back-to-back, continuously active for a long time, machine-like pacing.
+
+  - name: ethereum node following the chain
+    shape: Many long-lived flows to many endpoints exchanging small and medium packets, roughly balanced, moderate steady volume with no idle gaps; one short burst per window on a slot rhythm slightly longer than the window; no human rhythm.
+
+  - name: validator attesting
+    shape: Like a node following the chain, many balanced long-lived peer flows at steady moderate volume, plus one short outbound burst of small packets per window on a regular slot rhythm; continuously active, no human rhythm.
+
+  - name: block proposal
+    shape: Against steady many-peer balanced background traffic, a sudden brief burst of large outbound packets to many endpoints at once, then back to background; volume rising sharply for a moment.
+
+  - name: wallet polling an rpc endpoint
+    shape: Tiny request/response bursts to a single endpoint every few seconds at a machine-like regular interval, long idle gaps between them, very low volume, no human rhythm.
+
+  - name: sending a transaction from a wallet
+    shape: After a quiet stretch, one brief burst of tight request/response ping-pong with small packets to one or two endpoints, then quiet again; a human-triggered single event.
+
+  - name: defi swap in a browser dapp
+    shape: Web-browsing bursts to several endpoints interleaved with tight small-packet request/response ping-pong to one endpoint, paced by human pauses, ending in a short burst and then quiet.
+
+  - name: nft mint rush
+    shape: Rapid repeated short bursts of request/response to one or two endpoints at machine-like pace for a few seconds, small packets, then abrupt silence.
+
+  - name: mev bot
+    shape: Continuously active rapid request/response ping-pong of small packets to a few endpoints with clock-like regular spacing, roughly balanced, no idle gaps, no human rhythm, moderate volume.
+
+  - name: websocket block subscription
+    shape: A single long-lived flow with tiny keepalives and one short inbound burst of medium packets per window on a slot rhythm slightly longer than the window; long idle gaps otherwise; no outbound activity beyond acknowledgements.
