@@ -58,6 +58,9 @@ class Measures:
     top_flow_share: float = 0.0
     up_bin_count_cv: float = 0.0  # variability of outbound packet counts across bins
     burst_gap_cv: float = -1.0  # variability of the gaps between bursts; -1 = fewer than two gaps
+    burst_starts_ms: list = field(default_factory=list)  # absolute start of each burst in the window
+    long_gap_cv: float = -1.0  # same over the last minute (filled in by the engine); -1 = too few
+    long_bursts: int = 0
     dominant_dir_alternation: float = 0.0  # fraction of splt direction changes
 
 
@@ -162,6 +165,7 @@ def measure(segs: list[FlowSeg], new_endpoints: int, end_ms: int, window_s: floa
             cur, cur_active = 1, a
     (runs if cur_active else gaps).append(cur)
     m.bursts = len(runs)
+    m.burst_starts_ms = [start_ms + i * BIN_MS for i in range(n_bins) if active[i] and (i == 0 or not active[i - 1])]
     m.longest_burst_ms = max(runs, default=0) * BIN_MS
     m.typical_burst_ms = statistics.median(runs) * BIN_MS if runs else 0.0
     m.longest_gap_ms = max(gaps, default=0) * BIN_MS
@@ -226,6 +230,7 @@ class Shape:
     idle_gap: str
     idle_gap_count: str
     burst_spacing: str
+    burst_rhythm_minute: str
     packet_size: str
     size_spread: str
     size_mix: str
@@ -282,6 +287,7 @@ def describe(m: Measures, prev: Measures | None = None) -> Shape:
         idle_gap=L.idle_gap(m.longest_gap_ms),
         idle_gap_count=L.idle_gap_count(m.gaps_over_1s),
         burst_spacing=L.burst_spacing(m.burst_gap_cv, m.bursts),
+        burst_rhythm_minute=L.burst_rhythm_minute(m.long_gap_cv, m.long_bursts),
         packet_size=L.packet_size(m.mean_ps) if m.flows else "no packets",
         size_spread=L.size_spread(m.ps_cv),
         size_mix=L.size_mix(m.tiny_frac, m.large_frac) if m.flows else "no packets",
@@ -316,7 +322,7 @@ def render(s: Shape) -> str:
         "",
         "BURST STRUCTURE. The window is {occupancy}, with {burst_count} distinct bursts. The longest burst is {burst_length} "
         "and the typical burst is {typical_burst}. There are {idle_gap}; count of pauses long enough to notice: {idle_gap_count}. "
-        "Bursts arrive {burst_spacing}. Outbound timing: {outbound_evenness}.".format(**s.as_dict()),
+        "Bursts arrive {burst_spacing}. Over the last minute, {burst_rhythm_minute}. Outbound timing: {outbound_evenness}.".format(**s.as_dict()),
         "",
         "PACKET SIZES. Typical packet size is {packet_size}; the size distribution is {size_spread} and {size_mix}.".format(**s.as_dict()),
         "",

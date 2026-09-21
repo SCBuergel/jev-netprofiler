@@ -8,6 +8,8 @@ import asyncio
 import json
 import logging
 import time
+import statistics
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -28,6 +30,7 @@ class VifSession:
     analysis: VifAnalysis
     previous: PreviousTop = field(default_factory=PreviousTop)
     prev_measures: Measures | None = None
+    burst_starts: deque = field(default_factory=lambda: deque(maxlen=400))  # absolute ms, last minute
     shape_text: str = ""
     jev_state: dict = field(default_factory=dict)  # exactly what the last call sent
     status: str = "starting"
@@ -135,6 +138,7 @@ class Engine:
             s.ticks += 1
             view = window.snapshot()
             m = measure(view.segs, view.new_endpoints, view.end_ms, flow_first_seen=view.flow_first_seen)
+            self._note_bursts(s, m, view.end_ms)
             shape = describe(m, s.prev_measures)
             s.prev_measures = m
             text = render(shape)
@@ -155,6 +159,20 @@ class Engine:
             s.status = "asking"
             s.jev_state = self.client.build_state(text, s.previous)
             s.task = asyncio.get_event_loop().create_task(self._ask(s, s.jev_state))
+
+    @staticmethod
+    def _note_bursts(s: VifSession, m: Measures, end_ms: int) -> None:
+        """Merge this window's burst starts into a one-minute history (windows
+        overlap, so a burst seen twice is kept once) and rate its rhythm."""
+        for b in m.burst_starts_ms:
+            if not any(abs(b - x) < 500 for x in s.burst_starts):
+                s.burst_starts.append(b)
+        horizon = end_ms - 60_000
+        starts = sorted(x for x in s.burst_starts if x >= horizon)
+        m.long_bursts = len(starts)
+        gaps = [b - a for a, b in zip(starts, starts[1:])]
+        if len(gaps) >= 2 and statistics.fmean(gaps) > 0:
+            m.long_gap_cv = statistics.pstdev(gaps) / statistics.fmean(gaps)
 
     async def _ask(self, s: VifSession, state: dict) -> None:
         try:

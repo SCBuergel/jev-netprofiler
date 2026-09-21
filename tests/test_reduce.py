@@ -304,3 +304,21 @@ def test_burst_spacing_levels():
     m2 = measure(uneven, 0, END)
     assert m2.burst_gap_cv >= 0.6
     assert "irregular" in describe(m2).burst_spacing
+
+
+def test_burst_rhythm_over_a_minute():
+    from netprofiler.engine import Engine, VifSession
+    from netprofiler.analysis import VifAnalysis
+
+    s = VifSession(vif="x", analysis=VifAnalysis(n_options=11, population=10))
+    # regular 4 s bursts across six overlapping windows
+    for k in range(6):
+        end = END + k * 2000
+        segs = [seg(f"b{i}>1.1.1.1:443/6", t, t + 300, 3, 3, 300, 300) for i, t in enumerate(range(START - 20000, end, 4000)) if t >= end - 10000]
+        m = measure(segs, 0, end)
+        Engine._note_bursts(s, m, end)
+    assert m.long_bursts >= 3 and 0 <= m.long_gap_cv < 0.25
+    assert "clock-like" in describe(m).burst_rhythm_minute
+    text = render(describe(m))
+    assert_numbers_free(text)
+    assert 350 <= estimate_tokens(text) <= 900

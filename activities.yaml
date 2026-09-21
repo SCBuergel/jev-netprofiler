@@ -21,10 +21,10 @@ activities:
     shape: A burst of a few new download-dominated flows to one or two endpoints, then sustained high-volume download of MTU-sized packets at machine-like pacing, then an abrupt stop; no human rhythm.
 
   - name: chat
-    shape: Sporadic tiny bursts of small packets to one or two long-lived endpoints at irregular human intervals with long idle gaps between them; very low volume.
+    shape: Sporadic tiny bursts of small packets on one or two long-lived flows, at irregular, human-looking intervals over the last minute, sometimes a few lines in a row, long idle gaps between; very low volume.
 
   - name: wallet polling rpc
-    shape: A single flow to a single endpoint carrying one tiny request/response burst every few seconds at a clock-like regular interval, idle in between, very low volume, no human rhythm, never any large upload or sustained stream.
+    shape: A single flow to a single endpoint carrying one tiny request/response burst every few seconds at a clock-like regular rhythm over the last minute, idle in between, very low volume, no human rhythm, never any large upload or sustained stream.
 
   - name: torrent
     shape: A very large number of concurrent flows to many new endpoints with steady connection churn, traffic spread across many flows rather than one dominant flow, download-leaning to balanced with real upload, mixed packet sizes, continuously active.

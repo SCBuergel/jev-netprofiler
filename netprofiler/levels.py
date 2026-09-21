@@ -131,6 +131,21 @@ def burst_spacing(gap_cv: float, bursts: int) -> str:
     return _bucket(gap_cv, [(0.25, "at clock-like regular intervals"), (0.6, "at fairly regular intervals")], "at irregular, human-looking intervals")
 
 
+def burst_rhythm_minute(gap_cv: float, bursts: int) -> str:
+    """Rhythm of bursts over a longer horizon than one window."""
+    if bursts == 0:
+        return "there has been no activity at all"
+    if bursts == 1:
+        return "there has been a single burst"
+    if gap_cv < 0:
+        return "bursts have been too few to judge their rhythm"
+    return _bucket(
+        gap_cv,
+        [(0.25, "bursts have come at a clock-like regular rhythm"), (0.6, "bursts have come at a fairly regular rhythm")],
+        "bursts have come at irregular, human-looking intervals",
+    )
+
+
 def transport_mix(tcp_frac: float, udp_frac: float) -> str:
     if tcp_frac > 0.9:
         return "almost all TCP"
