@@ -259,12 +259,24 @@ class ProfilerApp(App):
             target = self._selected or next((n for n in self._order if self._visible(n)), None)
             v = vifs.get(target or "", {})
             self.query_one(".rawtitle", Label).update(f"raw input to Jev for {target}: the `state` of the last call (questions are static: netprofiler --dump-questions)")
-            self.query_one("#rawbody", Static).update(json.dumps(v.get("jev_state") or {}, indent=2) if v else "")
+            self.query_one("#rawbody", Static).update(render_state(v.get("jev_state") or {}) if v else "")
 
     async def action_quit(self) -> None:
         if self._on_quit:
             self._on_quit()
         self.exit()
+
+
+def render_state(state: dict) -> str:
+    """The `state` dict as it is sent, but with text fields shown as text
+    (newlines rendered) rather than as JSON-escaped strings."""
+    parts = []
+    for key, value in state.items():
+        if isinstance(value, str):
+            parts.append(f"{key}:\n{value}")
+        else:
+            parts.append(f"{key}:\n{json.dumps(value, indent=2)}")
+    return "\n\n".join(parts)
 
 
 def file_provider(path: Path) -> SnapshotProvider:
