@@ -59,6 +59,7 @@ class Settings:
     raw: bool = False  # raw-packet mode: tcpdump log instead of the reduced description
     raw_batch_s: float = 5.0  # one Jev call per interface every this many seconds
     raw_budget_tokens: int = 12000  # ceiling for the packet log per call
+    raw_window_s: float = 0.0  # seconds of log per call; 0 = the batch period (no overlap)
     dry_run: bool = False  # reduce and print, never call Jev
     headless: bool = False  # no TUI; log ticks as JSON lines to stdout
     state_file: Path | None = None  # JSON snapshot written every tick

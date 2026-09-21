@@ -16,9 +16,11 @@ START = END - 10_000
 
 
 def seg(key, first, last, up_p, down_p, up_b, down_b, mean_ps=500, piat=50.0, proto=6, syn=1, endpoint=None, splt_ps=None, splt_dir=None):
+    ep = endpoint or key.split(">")[1]
     return FlowSeg(
         key=key,
-        endpoint=endpoint or key.split(">")[1],
+        endpoint=ep,
+        host=ep.split(":")[0],
         first_ms=first,
         last_ms=last,
         up_packets=up_p,
@@ -220,14 +222,18 @@ class _FakeNFlow:
 
 
 def test_orientation_is_stable_across_active_timeout_cuts():
+    from netprofiler.anon import endpoint_id, flow_id
     from netprofiler.capture import Orienter, nflow_to_seg
 
     o = Orienter()
     first = nflow_to_seg(_FakeNFlow("10.137.0.10", "198.51.100.7", 40001, 443, s2d_syn=1, d2s_syn=1, s2d_bytes=100, d2s_bytes=10_000), o)
     # nfstream re-emits the continuation with the server as src
     cont = nflow_to_seg(_FakeNFlow("198.51.100.7", "10.137.0.10", 443, 40001, s2d_bytes=10_000, d2s_bytes=100), o)
-    assert first.key == cont.key
-    assert first.endpoint == cont.endpoint == "198.51.100.7:443/6"
+    assert first.key == cont.key == flow_id(6, 40001, "198.51.100.7", 443)
+    assert first.endpoint == cont.endpoint == endpoint_id(6, "198.51.100.7", 443)
+    for s in (first, cont):  # nothing stored resembles an address or a port
+        for v in (s.key, s.endpoint, s.host):
+            assert "198.51" not in v and "443" not in v and ":" not in v
     assert first.up_bytes == cont.up_bytes == 100
     assert first.down_bytes == cont.down_bytes == 10_000
     assert cont.splt_direction == [1, 0, 0]  # flipped back to local-relative
@@ -240,8 +246,10 @@ def test_local_net_override_beats_heuristics():
     from netprofiler.capture import Orienter, nflow_to_seg
 
     # both sides private, no SYN: heuristic alone would pick src; override picks the qube side
+    from netprofiler.anon import endpoint_id
+
     seg = nflow_to_seg(_FakeNFlow("10.137.99.1", "10.137.99.2", 8080, 5555, s2d_bytes=9000, d2s_bytes=100), Orienter(["10.137.99.2/32"]))
-    assert seg.endpoint == "10.137.99.1:8080/6"
+    assert seg.endpoint == endpoint_id(6, "10.137.99.1", 8080)
     assert seg.up_bytes == 100 and seg.down_bytes == 9000
 
 
@@ -259,13 +267,14 @@ def test_own_traffic_and_shared_flow_filters():
     import time as _t
     from netprofiler.capture import OwnTraffic, SharedFlows, nflow_to_seg, Orienter
 
+    from netprofiler.anon import endpoint_id, flow_id
+
     own = OwnTraffic(api_host="localhost")
-    own._api_ips = {"198.51.100.9"}
-    own._seen[(6, 40001, "203.0.113.5:443/6")] = _t.time()
+    own._api_endpoints = {endpoint_id(6, "198.51.100.9", 443)}
+    own._seen[flow_id(6, 40001, "203.0.113.5", 443)] = _t.time()
     mine = nflow_to_seg(_FakeNFlow("10.137.0.10", "203.0.113.5", 40001, 443, s2d_syn=1), Orienter(["10.137.0.10/32"]))
     api = nflow_to_seg(_FakeNFlow("10.137.0.10", "198.51.100.9", 40002, 443, s2d_syn=1), Orienter(["10.137.0.10/32"]))
     other = nflow_to_seg(_FakeNFlow("10.137.0.10", "203.0.113.5", 40003, 443, s2d_syn=1), Orienter(["10.137.0.10/32"]))
-    assert mine.local_port == 40001 and mine.tuple4 == (6, 40001, "203.0.113.5:443/6")
     assert own.is_own(mine) and own.is_own(api) and not own.is_own(other)
 
     shared = SharedFlows()

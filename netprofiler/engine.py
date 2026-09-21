@@ -178,7 +178,10 @@ class Engine:
             if cap is None:
                 continue
             s.ticks += 1
-            start_ms = self._last_batch_end_ms.get(name, end_ms - int(self.settings.raw_batch_s * 1000))
+            if self.settings.raw_window_s > 0:
+                start_ms = end_ms - int(self.settings.raw_window_s * 1000)
+            else:
+                start_ms = self._last_batch_end_ms.get(name, end_ms - int(self.settings.raw_batch_s * 1000))
             self._last_batch_end_ms[name] = end_ms
             packets = cap.batch(start_ms, end_ms)
             text, stats = encode(packets, start_ms, self.settings.raw_budget_tokens)

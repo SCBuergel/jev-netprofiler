@@ -2,10 +2,9 @@
 
 `tcpdump -nn -tt -q -l -s 96` records headers only (payload is never even
 captured) and prints one line per packet. Each line is parsed into a
-`Packet` (time, direction, flow, protocol, remote port, length). Every
-batch period the packets are encoded into a compact text under a token
-budget and sent to Jev as the state. Remote addresses never leave the
-process: each remote host becomes an opaque per-batch endpoint index.
+`Packet` (time, direction, flow digest, protocol, length). Addresses and
+ports are hashed with a per-process salt while the line is parsed and are
+never stored; the log shows flows and endpoints as small per-batch indices.
 
 Size ladder, applied until the text fits the budget:
   1. one line per packet
@@ -25,6 +24,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
+from .anon import endpoint_id, flow_id
 from .capture import OwnTraffic, SelfCapture
 from .flows import FlowSeg
 
@@ -45,18 +45,13 @@ class Packet:
     t_ms: int
     out: bool  # local -> remote
     proto: int  # 6 / 17
-    local_port: int
-    remote_ip: str
-    remote_port: int
+    flow: str  # salted digest of (proto, local port, remote ip, remote port)
+    endpoint: str  # salted digest of (proto, remote ip, remote port)
     length: int  # payload-ish length as tcpdump reports it (tcp: payload bytes; udp: length)
 
     @property
-    def endpoint(self) -> str:
-        return f"{self.remote_ip}:{self.remote_port}/{self.proto}"
-
-    @property
-    def tuple4(self) -> tuple[int, int, str]:
-        return (self.proto, self.local_port, self.endpoint)
+    def tuple4(self) -> str:
+        return self.flow
 
 
 def parse_line(line: str, local_ips: set[str]) -> Packet | None:
@@ -72,7 +67,8 @@ def parse_line(line: str, local_ips: set[str]) -> Packet | None:
         return None  # not ours (multicast chatter, other hosts on the segment)
     proto = 6 if m.group("tcp") else 17
     length = int(m.group("tlen") or m.group("ulen") or 0)
-    return Packet(int(float(m.group("ts")) * 1000), out, proto, lport, rip, rport, length)
+    # addresses and ports stop here
+    return Packet(int(float(m.group("ts")) * 1000), out, proto, flow_id(proto, lport, rip, rport), endpoint_id(proto, rip, rport), length)
 
 
 class TcpdumpCapture:
@@ -113,7 +109,7 @@ class TcpdumpCapture:
                 p = parse_line(line, self.local_ips)
                 if p is None:
                     continue
-                if self.own is not None and self.own.is_own(_as_seg_like(p)):
+                if self.own is not None and self.own.is_own(p):  # type: ignore[arg-type]
                     self.excluded_own += 1
                     continue
                 with self._lock:
@@ -132,18 +128,6 @@ class TcpdumpCapture:
             return [p for p in self._buf if since_ms <= p.t_ms < until_ms]
 
 
-class _SegLike:
-    """Just enough of FlowSeg for OwnTraffic.is_own (tuple4 + endpoint)."""
-
-    __slots__ = ("tuple4", "endpoint")
-
-    def __init__(self, p: Packet) -> None:
-        self.tuple4 = p.tuple4
-        self.endpoint = p.endpoint
-
-
-def _as_seg_like(p: Packet) -> FlowSeg:  # type: ignore[return-value]
-    return _SegLike(p)  # type: ignore[return-value]
 
 
 # --------------------------------------------------------------- encoding --
@@ -155,7 +139,7 @@ def estimate_tokens(text: str) -> int:
 def drop_probes(packets: list[Packet]) -> tuple[list[Packet], int]:
     """Remove flows that only ever received packets (nothing sent back) with
     at most two packets, i.e. scans and stray inbound UDP."""
-    by_flow: dict[tuple, list[Packet]] = {}
+    by_flow: dict[str, list[Packet]] = {}
     for p in packets:
         by_flow.setdefault(p.tuple4, []).append(p)
     keep, dropped = [], 0
@@ -176,14 +160,16 @@ def encode(packets: list[Packet], start_ms: int, budget_tokens: int) -> tuple[st
         return "no packets in this batch", stats
 
     # flow and endpoint tables; zero-length TCP packets (pure acks) are only counted
-    flows: dict[tuple, int] = {}
+    flows: dict[str, int] = {}
     endpoints: dict[str, int] = {}
-    acks: dict[tuple, int] = {}
+    protos: dict[str, int] = {}
+    acks: dict[str, int] = {}
     for p in packets:
-        endpoints.setdefault(p.remote_ip, len(endpoints) + 1)
-        flows.setdefault(p.tuple4, len(flows) + 1)
+        endpoints.setdefault(p.endpoint, len(endpoints) + 1)
+        flows.setdefault(p.flow, len(flows) + 1)
+        protos.setdefault(p.flow, p.proto)
         if p.proto == 6 and p.length == 0:
-            acks[p.tuple4] = acks.get(p.tuple4, 0) + 1
+            acks[p.flow] = acks.get(p.flow, 0) + 1
     data = [p for p in packets if not (p.proto == 6 and p.length == 0)]
     bytes_in = sum(p.length for p in data if not p.out)
     bytes_out = sum(p.length for p in data if p.out)
@@ -192,11 +178,11 @@ def encode(packets: list[Packet], start_ms: int, budget_tokens: int) -> tuple[st
     header = [
         f"summary: {len(flows)} flows to {len(endpoints)} endpoints, {len(packets)} packets over {span_ms} ms, "
         f"{bytes_in} B in, {bytes_out} B out, {gaps} pauses of a second or more",
-        "flows (id proto endpoint:port, pure-ack count):",
+        "flows (id proto endpoint, pure-ack count):",
     ]
     for key, fid in flows.items():
-        p0 = next(p for p in packets if p.tuple4 == key)
-        header.append(f"f{fid} {'tcp' if key[0] == 6 else 'udp'} e{endpoints[p0.remote_ip]}:{p0.remote_port} acks={acks.get(key, 0)}")
+        p0 = next(p for p in packets if p.flow == key)
+        header.append(f"f{fid} {'tcp' if protos[key] == 6 else 'udp'} e{endpoints[p0.endpoint]} acks={acks.get(key, 0)}")
     head = "\n".join(header) + "\npackets (+ms since previous line, flow, dir > out < in, len):\n"
     stats["flows"] = len(flows)
     stats["endpoints"] = len(endpoints)
@@ -258,8 +244,8 @@ def encode(packets: list[Packet], start_ms: int, budget_tokens: int) -> tuple[st
 
 
 RAW_LEGEND = (
-    "A headers-only packet log of one network link over one batch of a few seconds. No payload, no addresses: "
-    "endpoints are opaque ids, flows are numbered, ports are real. Pure TCP acks are not listed, only counted per flow. "
+    "A headers-only packet log of one network link over the last few seconds. No payload, no addresses, no ports: "
+    "endpoints and flows are just numbered. Pure TCP acks are not listed, only counted per flow. "
     "Each packet line is the delay in ms since the previous line, the flow id with direction (> sent by this machine, "
     "< received), and the payload length in bytes; 'x N over M ms' means N identical packets back to back; binned lines "
     "give packet count and bytes per time bin. Judge the activity from timing, sizes, directions and flow structure."

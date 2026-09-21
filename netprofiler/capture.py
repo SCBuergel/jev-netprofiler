@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 import psutil
 
+from .anon import endpoint_id, flow_id, host_id
 from .config import (
     ACTIVE_TIMEOUT,
     FORBIDDEN_INTERFACES,
@@ -104,7 +105,7 @@ class Orienter:
         a = f"{f.src_ip}:{f.src_port}"
         b = f"{f.dst_ip}:{f.dst_port}"
         lo, hi = sorted((a, b))
-        return f"{lo}<>{hi}/{f.protocol}"
+        return host_id(f"{lo}<>{hi}/{f.protocol}")  # digest: the cache never holds addresses
 
     def local_is_src(self, f, key: str) -> bool:
         src = f"{f.src_ip}:{f.src_port}"
@@ -121,12 +122,12 @@ class Orienter:
         else:
             cached = self._local_addr.get(key)
             if cached is not None:
-                return cached == src
+                return cached == host_id(src)
             sp, dp = _is_private(f.src_ip), _is_private(f.dst_ip)
             local = src if (sp and not dp) else dst if (dp and not sp) else src
         if len(self._local_addr) > 50_000:  # bound memory on very busy links
             self._local_addr.clear()
-        self._local_addr[key] = local
+        self._local_addr[key] = host_id(local)  # which side is local, stored as a digest
         return local == src
 
 
@@ -163,23 +164,24 @@ def nflow_to_seg(f, orienter: Orienter | None = None) -> FlowSeg:
     local_src = orienter.local_is_src(f, key)
     s2d_piat = (float(getattr(f, "src2dst_mean_piat_ms", 0) or 0.0), float(getattr(f, "src2dst_stddev_piat_ms", 0) or 0.0))
     d2s_piat = (float(getattr(f, "dst2src_mean_piat_ms", 0) or 0.0), float(getattr(f, "dst2src_stddev_piat_ms", 0) or 0.0))
+    proto = int(f.protocol)
     if local_src:
         up_p, down_p = f.src2dst_packets, f.dst2src_packets
         up_b, down_b = f.src2dst_bytes, f.dst2src_bytes
         up_piat, down_piat = s2d_piat, d2s_piat
-        endpoint = f"{f.dst_ip}:{f.dst_port}/{f.protocol}"
-        local_port = int(f.src_port)
+        local_port, remote_ip, remote_port = int(f.src_port), f.dst_ip, int(f.dst_port)
         splt_dir = list(f.splt_direction or [])
     else:
         up_p, down_p = f.dst2src_packets, f.src2dst_packets
         up_b, down_b = f.dst2src_bytes, f.src2dst_bytes
         up_piat, down_piat = d2s_piat, s2d_piat
-        endpoint = f"{f.src_ip}:{f.src_port}/{f.protocol}"
-        local_port = int(f.dst_port)
+        local_port, remote_ip, remote_port = int(f.dst_port), f.src_ip, int(f.src_port)
         splt_dir = [1 - d if d in (0, 1) else d for d in (f.splt_direction or [])]
+    # addresses and ports stop here: only salted digests are kept
     return FlowSeg(
-        key=key,
-        endpoint=endpoint,
+        key=flow_id(proto, local_port, remote_ip, remote_port),
+        endpoint=endpoint_id(proto, remote_ip, remote_port),
+        host=host_id(remote_ip),
         first_ms=int(f.bidirectional_first_seen_ms),
         last_ms=int(f.bidirectional_last_seen_ms),
         up_packets=int(up_p),
@@ -204,7 +206,6 @@ def nflow_to_seg(f, orienter: Orienter | None = None) -> FlowSeg:
         splt_direction=splt_dir,
         splt_ps=list(f.splt_ps or []),
         splt_piat_ms=list(f.splt_piat_ms or []),
-        local_port=local_port,
     )
 
 
@@ -226,8 +227,8 @@ class OwnTraffic:
 
     def __init__(self, api_host: str | None = None) -> None:
         self.api_host = api_host or urlparse(os.environ.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai")).hostname or "api.typesafe.ai"
-        self._seen: dict[tuple[int, int, str], float] = {}  # tuple4 -> last seen
-        self._api_ips: set[str] = set()
+        self._seen: dict[str, float] = {}  # flow digest -> last seen
+        self._api_endpoints: set[str] = set()  # endpoint digests of the API host on 443
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="own-traffic", daemon=True)
@@ -252,7 +253,7 @@ class OwnTraffic:
         except OSError:
             return
         with self._lock:
-            self._seen[(proto, lport, f"{rip}:{rport}/{proto}")] = time.time()
+            self._seen[flow_id(proto, lport, rip, rport)] = time.time()
 
     def _install_connect_hook(self) -> None:
         """Wrap socket.connect/connect_ex process-wide (asyncio's sock_connect
@@ -285,9 +286,9 @@ class OwnTraffic:
             now = time.time()
             if now >= next_resolve:
                 try:
-                    ips = {ai[4][0] for ai in socket.getaddrinfo(self.api_host, 443, proto=socket.IPPROTO_TCP)}
+                    eps = {endpoint_id(6, ai[4][0], 443) for ai in socket.getaddrinfo(self.api_host, 443, proto=socket.IPPROTO_TCP)}
                     with self._lock:
-                        self._api_ips = ips
+                        self._api_endpoints = eps
                 except OSError:
                     pass
                 next_resolve = now + self.RESOLVE_S
@@ -300,7 +301,7 @@ class OwnTraffic:
                     if not c.raddr or not c.laddr:
                         continue
                     proto = 6 if c.type == socket.SOCK_STREAM else 17
-                    self._seen[(proto, c.laddr.port, f"{c.raddr.ip}:{c.raddr.port}/{proto}")] = now
+                    self._seen[flow_id(proto, c.laddr.port, c.raddr.ip, c.raddr.port)] = now
                 if len(self._seen) > 10_000:
                     cutoff = now - self.REMEMBER_S
                     self._seen = {k: v for k, v in self._seen.items() if v >= cutoff}
@@ -308,11 +309,7 @@ class OwnTraffic:
 
     def is_own(self, seg: FlowSeg) -> bool:
         with self._lock:
-            if seg.tuple4 in self._seen:
-                return True
-            ip = seg.endpoint.rsplit(":", 1)[0]
-            port = seg.endpoint.rsplit(":", 1)[1].split("/")[0]
-            return ip in self._api_ips and port == "443"
+            return seg.tuple4 in self._seen or seg.endpoint in self._api_endpoints
 
 
 class SharedFlows:
@@ -322,7 +319,7 @@ class SharedFlows:
     REMEMBER_S = 300.0
 
     def __init__(self) -> None:
-        self._seen: dict[tuple[int, int, str], float] = {}
+        self._seen: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def note(self, seg: FlowSeg) -> None:

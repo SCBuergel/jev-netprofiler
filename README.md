@@ -7,7 +7,9 @@ seconds of flow metadata into a short text made only of level words (no
 addresses, ports, sizes or timestamps), asks TypeSafe's Jev model which
 activity from a small catalog that shape looks like, and displays the answer
 in a terminal UI with a running count of identifying bits. Jev never sees a
-number; all arithmetic is local Python.
+number; all arithmetic is local Python. Addresses and ports are hashed with
+a per-process salt the moment a packet or flow record is parsed and are
+never stored, in either mode.
 
 ![terminal UI](docs/screenshot.png)
 
@@ -104,10 +106,11 @@ follow the 4-tick smoothed top answer); anonymity set = population / 2^bits.
 `--raw` replaces the reduced description with a filtered packet log.
 `tcpdump -nn -tt -q -l -s 96` records headers only (payload is never
 captured), one line per packet; every `--raw-batch` seconds (default 5) the
-batch is encoded and sent as the state. Columns kept: time (as the delay
+last `--raw-window` seconds (default: the batch) are encoded and sent as the
+state. Columns kept: time (as the delay
 since the previous line), flow id, direction, payload length; a flow table
-gives protocol, an opaque endpoint id and the port. Remote addresses never
-leave the process. Pure TCP acks are counted per flow rather than listed,
+gives protocol and an opaque endpoint id. No address or port is stored or
+sent. Pure TCP acks are counted per flow rather than listed,
 and one computed summary line gives flow, endpoint, packet, byte and pause
 counts. The text is kept under `--raw-budget` tokens (default 12000) by a
 ladder: verbatim lines, then run-length encoding of identical packets, then

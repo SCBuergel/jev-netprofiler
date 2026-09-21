@@ -19,8 +19,9 @@ from .config import ACTIVE_TIMEOUT, WINDOW_SECONDS
 
 @dataclass(slots=True)
 class FlowSeg:
-    key: str  # 5-tuple identity (internal only)
-    endpoint: str  # remote (ip, port, proto) identity (internal only)
+    key: str  # salted digest of (proto, local port, remote ip, remote port); see anon.py
+    endpoint: str  # salted digest of (proto, remote ip, remote port)
+    host: str  # salted digest of the remote ip
     first_ms: int
     last_ms: int
     up_packets: int  # src2dst: the downstream qube sending outwards
@@ -45,13 +46,12 @@ class FlowSeg:
     splt_direction: list[int] = field(default_factory=list)  # 0 up, 1 down
     splt_ps: list[int] = field(default_factory=list)
     splt_piat_ms: list[int] = field(default_factory=list)
-    local_port: int = 0
 
     @property
-    def tuple4(self) -> tuple[int, int, str]:
-        """(protocol, local port, remote endpoint): stable across NAT in the
-        common case where masquerade keeps the source port."""
-        return (self.protocol, self.local_port, self.endpoint)
+    def tuple4(self) -> str:
+        """Flow identity (digest of proto, local port, remote ip, remote port);
+        stable across NAT in the common case where masquerade keeps the port."""
+        return self.key
 
     @property
     def packets(self) -> int:
