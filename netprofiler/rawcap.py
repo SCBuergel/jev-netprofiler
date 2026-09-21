@@ -140,14 +140,17 @@ def estimate_tokens(text: str) -> int:
 
 
 def drop_probes(packets: list[Packet]) -> tuple[list[Packet], int]:
-    """Remove flows that only ever received packets (nothing sent back) with
-    at most two packets, i.e. scans and stray inbound UDP."""
+    """Remove flows that are not activity: flows that never carry payload in
+    either direction (SYN retries answered by resets, however many), and
+    inbound-only flows of at most two packets (scans, stray UDP)."""
     by_flow: dict[str, list[Packet]] = {}
     for p in packets:
         by_flow.setdefault(p.tuple4, []).append(p)
     keep, dropped = [], 0
     for pk in by_flow.values():
-        if len(pk) <= 2 and not any(p.out for p in pk):
+        no_payload = all(p.length == 0 for p in pk)
+        inbound_only = not any(p.out for p in pk)
+        if no_payload or (len(pk) <= 2 and inbound_only):
             dropped += len(pk)
             continue
         keep.extend(pk)

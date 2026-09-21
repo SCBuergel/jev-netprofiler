@@ -17,7 +17,7 @@ _KEY_RE = re.compile(r"[^a-z0-9]+")
 class Activity:
     key: str  # option name sent to Jev and returned in answers
     name: str  # display name
-    shape: str  # one-line description of the traffic shape
+    shape: object  # the option's criteria: a one-line string, or a mapping of named fields
 
 
 def _key(name: str) -> str:
@@ -38,11 +38,16 @@ def load_catalog(path: Path) -> list[Activity]:
         if not k or k in seen:
             raise ValueError(f"{path}: duplicate or empty activity name {e['name']!r}")
         seen.add(k)
-        out.append(Activity(key=k, name=str(e["name"]).strip(), shape=" ".join(str(e["shape"]).split())))
+        shape = e["shape"]
+        if isinstance(shape, dict):
+            shape = {str(f): (" ".join(str(v).split()) if isinstance(v, str) else v) for f, v in shape.items()}
+        else:
+            shape = " ".join(str(shape).split())
+        out.append(Activity(key=k, name=str(e["name"]).strip(), shape=shape))
     if len(out) > CATALOG_MAX:
         raise ValueError(f"{path}: {len(out)} activities; Choice allows at most {CATALOG_MAX}")
     return out
 
 
-def criteria(catalog: list[Activity]) -> dict[str, str]:
+def criteria(catalog: list[Activity]) -> dict[str, object]:
     return {a.key: a.shape for a in catalog}

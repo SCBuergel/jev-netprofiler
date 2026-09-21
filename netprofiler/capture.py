@@ -142,14 +142,17 @@ def is_probe(f, local_is_src: bool) -> bool:
     if f.protocol in (1, 58):  # ICMP / ICMPv6
         return True
     packets = int(f.bidirectional_packets or 0)
-    if packets > 4:
-        return False
     syn_local = int((f.src2dst_syn_packets if local_is_src else f.dst2src_syn_packets) or 0)
     syn_remote = int((f.dst2src_syn_packets if local_is_src else f.src2dst_syn_packets) or 0)
     local_packets = int(f.src2dst_packets if local_is_src else f.dst2src_packets)
     if f.protocol == 6:
         remote_initiated = syn_remote > 0 and syn_local == 0
-        return remote_initiated and int(f.bidirectional_rst_packets or 0) > 0
+        # SYN retries answered by resets carry no payload however many there are:
+        # every packet is header-sized (a 60-byte SYN, a 40-byte RST)
+        tiny = packets > 0 and int(f.bidirectional_bytes or 0) / packets < 80
+        return remote_initiated and int(f.bidirectional_rst_packets or 0) > 0 and tiny
+    if packets > 4:
+        return False
     if f.protocol == 17:
         remote_first = not local_is_src  # src is whoever sent the first packet
         return remote_first and local_packets == 0

@@ -1,4 +1,5 @@
 import random
+import re
 
 from netprofiler.anon import endpoint_id, flow_id
 from netprofiler.rawcap import Packet, drop_probes, encode, estimate_tokens, parse_line
@@ -14,8 +15,9 @@ def test_parse_tcpdump_lines():
     assert q and not q.out and q.length == 0 and q.tuple4 == p.tuple4
     u = parse_line("1758412346.000000 IP 10.137.0.10.5555 > 10.139.1.1.53: UDP, length 56", LOCAL)
     assert u and u.proto == 17 and u.length == 56
-    for pk in (p, q, u):  # nothing stored on the packet resembles an address or port
-        assert not any(s in pk.flow + pk.endpoint for s in ("10.137", "203.0", "443", "51000", "53", ":", "."))
+    for pk in (p, q, u):  # only 16-hex-char digests are stored, no address or port fields
+        assert re.fullmatch(r"[0-9a-f]{16}", pk.flow) and re.fullmatch(r"[0-9a-f]{16}", pk.endpoint)
+        assert pk.label is None
         assert not hasattr(pk, "remote_ip") and not hasattr(pk, "remote_port") and not hasattr(pk, "local_port")
     assert parse_line("1758412346.000000 IP 10.137.0.10 > 8.8.8.8: ICMP echo request, id 1, seq 1, length 64", LOCAL) is None
     assert parse_line("garbage", LOCAL) is None
@@ -32,10 +34,13 @@ def test_probe_filter_and_verbatim_encoding():
         _pk(1030, False, 40000, "203.0.113.5", 443, 1448),
         _pk(1500, False, 27017, "185.1.1.1", 47173, 0),  # scan: inbound only
     ]
+    for i in range(3):  # peer retrying against a closed port: SYN in, RST out, no payload ever
+        pk.append(_pk(2000 + 1000 * i, False, 6998, "178.202.239.20", 61640, 0))
+        pk.append(_pk(2000 + 1000 * i, True, 6998, "178.202.239.20", 61640, 0))
     kept, dropped = drop_probes(pk)
-    assert dropped == 1 and len(kept) == 2
+    assert dropped == 7 and len(kept) == 2
     text, stats = encode(pk, 1000, budget_tokens=2000)
-    assert stats["level"] == 0 and stats["probes_dropped"] == 1
+    assert stats["level"] == 0 and stats["probes_dropped"] == 7
     assert "f1 tcp e1 acks=0" in text and "\n+0 f1> 517\n+30 f1< 1448" in text and "summary: 1 flows to 1 endpoints" in text
     assert "203.0.113.5" not in text and "185.1.1.1" not in text and "443" not in text  # neither addresses nor ports appear
 

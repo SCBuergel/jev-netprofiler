@@ -210,6 +210,7 @@ class _FakeNFlow:
         self.src2dst_syn_packets, self.dst2src_syn_packets = s2d_syn, d2s_syn
         self.src2dst_packets, self.dst2src_packets = 10, 20
         self.src2dst_bytes, self.dst2src_bytes = s2d_bytes, d2s_bytes
+        self.bidirectional_bytes = s2d_bytes + d2s_bytes
         self.bidirectional_first_seen_ms, self.bidirectional_last_seen_ms = START, START + 1000
         self.bidirectional_mean_ps = self.bidirectional_stddev_ps = 500.0
         self.bidirectional_min_ps = self.bidirectional_max_ps = 500
@@ -287,11 +288,14 @@ def test_probe_filter():
 
     scan = _FakeNFlow("185.139.214.221", "10.137.0.10", 47173, 27017, s2d_syn=1)
     scan.src2dst_packets, scan.dst2src_packets, scan.bidirectional_rst_packets = 1, 1, 1
-    scan.bidirectional_packets = 2
+    scan.bidirectional_packets, scan.bidirectional_bytes = 2, 100
     assert is_probe(scan, local_is_src=False)
     login = _FakeNFlow("203.0.113.5", "10.137.0.10", 50000, 22, s2d_syn=1)
-    login.bidirectional_packets = 400
+    login.bidirectional_packets, login.bidirectional_bytes = 400, 120_000
     assert not is_probe(login, local_is_src=False)
+    retries = _FakeNFlow("178.202.239.20", "10.137.0.10", 61640, 6998, s2d_syn=3)  # a peer retrying against a closed port
+    retries.bidirectional_packets, retries.bidirectional_rst_packets, retries.bidirectional_bytes = 6, 3, 300
+    assert is_probe(retries, local_is_src=False)
     ping = _FakeNFlow("3.249.179.191", "10.137.0.10", 0, 0)
     ping.protocol = 1
     assert is_probe(ping, local_is_src=False)

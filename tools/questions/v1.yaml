@@ -1,0 +1,76 @@
+# Question set v1: structured criteria with cues for both input forms.
+activities:
+  - name: idle
+    shape:
+      what: Silent or nearly silent link.
+      in_description: silent or sporadic occupancy, negligible volume, long idle gaps, no bursts.
+      in_packet_log: no packets, or a handful of tiny packets with pauses of seconds between them.
+      not_for: any sustained stream, any burst of new flows, any keystroke-like rhythm.
+
+  - name: unknown
+    shape:
+      what: Traffic is clearly present but matches none of the other activities.
+      not_for: quiet links (that is idle) or anything another entry describes.
+
+  - name: web browsing
+    shape:
+      what: A person loading pages in a browser.
+      in_description: bursts of many new short-lived flows to several endpoints, download-dominated, mixed packet sizes, separated by idle gaps of human reading pauses.
+      in_packet_log: within one or two seconds many new flows open to several endpoints, each with a short handshake, a small request and a few larger inbound packets; then seconds of quiet; then another such burst.
+      not_for: one long stream (download), many concurrent long-lived flows (torrent), a single flow with tiny packets.
+
+  - name: ssh
+    shape:
+      what: A person typing in a remote shell.
+      in_description: a single long-lived balanced flow of tiny packets in a keystroke-like uneven human rhythm with tight request/response ping-pong and idle pauses.
+      in_packet_log: one long-lived flow; outbound packets of under 100 bytes at uneven gaps of roughly 80 to 500 ms, each answered by a tiny inbound packet within tens of ms; occasional short inbound bursts when output scrolls.
+      not_for: even, clock-like spacing (wallet polling), large packets, many flows.
+
+  - name: software updates
+    shape:
+      what: A package manager fetching updates.
+      in_description: a burst of a few new download-dominated flows to one or two endpoints, then sustained high-volume download of MTU-sized packets at machine-like pacing, then an abrupt stop; no human rhythm.
+      in_packet_log: a few flows to one or two endpoints fetching one file after another, runs of full-size inbound packets with only small outbound requests between them, no pauses of seconds.
+      not_for: bursts separated by reading pauses (browsing), a single flow for the whole time (download).
+
+  - name: chat
+    shape:
+      what: A person in a messaging client.
+      in_description: sporadic tiny bursts of small packets on one or two long-lived flows at irregular, human-looking intervals, sometimes a few lines in a row, long idle gaps between; very low volume.
+      in_packet_log: one long-lived flow; a small exchange of a few packets every few seconds at uneven spacing, sometimes two or three exchanges close together, then pauses of many seconds.
+      not_for: clock-like even spacing (wallet polling), keystroke rhythm with a reply per keystroke (ssh).
+
+  - name: wallet polling rpc
+    shape:
+      what: A wallet or dapp polling an RPC endpoint in the background.
+      in_description: a single flow to a single endpoint carrying one tiny request/response burst every few seconds at a clock-like regular rhythm, idle in between, very low volume, no human rhythm, never any large upload or sustained stream.
+      in_packet_log: one flow; one small request and one small reply every few seconds at an even interval, nothing else.
+      not_for: uneven spacing or clustered exchanges (chat), keystroke rhythm (ssh).
+
+  - name: torrent
+    shape:
+      what: A BitTorrent client transferring.
+      in_description: a very large number of concurrent flows to many new endpoints with steady connection churn, traffic spread across many flows rather than one dominant flow, download-leaning to balanced with real upload, mixed packet sizes, continuously active.
+      in_packet_log: dozens of flows to dozens of endpoints active in the same window, full-size packets in several of them at once, new flows appearing throughout.
+      not_for: one dominant flow (download or upload), a handful of flows (browsing).
+
+  - name: large file upload
+    shape:
+      what: One big file going out.
+      in_description: one dominant long-lived flow, almost entirely upload, MTU-sized outbound packets back-to-back, continuously active at high volume, no human rhythm.
+      in_packet_log: one flow with long runs of outbound packets of around 1400 bytes with no gaps, only acks coming back.
+      not_for: inbound data (download), many flows (torrent).
+
+  - name: large file download
+    shape:
+      what: One big file coming in.
+      in_description: one dominant long-lived flow, almost entirely download, MTU-sized packets back-to-back, continuously active at very high volume, no human rhythm.
+      in_packet_log: one flow with long runs of inbound packets of around 1400 bytes with no gaps, only acks going out.
+      not_for: outbound data (upload), many flows (torrent), a few flows fetching file after file (software updates).
+
+  - name: claude code
+    shape:
+      what: An AI coding agent talking to a model API.
+      in_description: several to many long-lived flows to one or two endpoints; per turn a brief upload-dominated burst of large packets followed by a download-leaning stream of small packets at an irregular rapid rate lasting several seconds, then a pause of several seconds; between turns only tiny keepalives on many flows.
+      in_packet_log: several long-lived flows to the same endpoint; a burst of outbound full-size packets (tens of kilobytes) followed by a stream of inbound packets of a few hundred bytes at 20 to 100 ms spacing for several seconds; then quiet apart from tiny keepalives.
+      not_for: keystroke rhythm (ssh), a single flow with one exchange every few seconds (wallet polling).

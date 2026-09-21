@@ -1,0 +1,39 @@
+# Activity catalog. Each entry is one option of the Jev Choice question:
+# `name` is shown in the UI, `shape` is what Jev reads. Describe traffic
+# shape only (flows, endpoints, direction, bursts, packet sizes, spacing,
+# idle gaps, transport); never ports, hosts or protocol names. Up to 255
+# entries. Keep "idle" and "unknown" as the no-match outcomes.
+
+activities:
+  - name: idle
+    shape: Silent or nearly silent link; at most a few tiny keepalive packets with long idle gaps and no bursts.
+
+  - name: unknown
+    shape: Traffic is present but its shape matches none of the other described activities.
+
+  - name: web browsing
+    shape: Short bursts of many new short-lived flows to several endpoints, download-dominated with mixed packet sizes, separated by idle gaps of human reading pauses.
+
+  - name: ssh
+    shape: A single long-lived balanced flow of tiny packets in a keystroke-like uneven human rhythm with tight request/response ping-pong and idle pauses; occasional short download bursts when output scrolls.
+
+  - name: software updates
+    shape: A burst of a few new download-dominated flows to one or two endpoints, then sustained high-volume download of MTU-sized packets at machine-like pacing, then an abrupt stop; no human rhythm.
+
+  - name: chat
+    shape: Sporadic tiny bursts of small packets on one or two long-lived flows, at irregular, human-looking intervals over the last minute, sometimes a few lines in a row, long idle gaps between; very low volume.
+
+  - name: wallet polling rpc
+    shape: A single flow to a single endpoint carrying one tiny request/response burst every few seconds at a clock-like regular rhythm over the last minute, idle in between, very low volume, no human rhythm, never any large upload or sustained stream.
+
+  - name: torrent
+    shape: A very large number of concurrent flows to many new endpoints with steady connection churn, traffic spread across many flows rather than one dominant flow, download-leaning to balanced with real upload, mixed packet sizes, continuously active.
+
+  - name: large file upload
+    shape: One dominant long-lived flow, almost entirely upload, MTU-sized outbound packets back-to-back, continuously active at high volume, no human rhythm.
+
+  - name: large file download
+    shape: One dominant long-lived flow, almost entirely download, MTU-sized packets back-to-back, continuously active at very high volume, no human rhythm.
+
+  - name: claude code
+    shape: Several to many long-lived flows to one or two endpoints; per turn a brief upload-dominated burst of large packets followed by a download-leaning stream of small packets at an irregular rapid rate lasting several seconds, then a pause of several seconds; between turns only tiny keepalives on many flows.
