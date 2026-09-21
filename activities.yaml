@@ -27,7 +27,7 @@ activities:
     shape: A single flow to a single endpoint carrying one tiny request/response burst every few seconds at a clock-like regular interval, idle in between, very low volume, no human rhythm, never any large upload or sustained stream.
 
   - name: torrent
-    shape: A very large number of concurrent flows to many new endpoints, mixed TCP and UDP, roughly balanced bytes, mixed packet sizes, continuously active, steady connection churn.
+    shape: A very large number of concurrent flows to many new endpoints with steady connection churn, traffic spread across many flows rather than one dominant flow, download-leaning to balanced with real upload, mixed packet sizes, continuously active.
 
   - name: large file upload
     shape: One dominant long-lived flow, almost entirely upload, MTU-sized outbound packets back-to-back, continuously active at high volume, no human rhythm.
