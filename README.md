@@ -99,6 +99,41 @@ outstanding is dropped. Shannon entropy of the Choice distribution gives
 bits = log2(N) - H; bits accumulate once per activity episode (episodes
 follow the 4-tick smoothed top answer); anonymity set = population / 2^bits.
 
+## Raw-packet mode (experimental, this branch)
+
+`--raw` replaces the reduced description with a filtered packet log.
+`tcpdump -nn -tt -q -l -s 96` records headers only (payload is never
+captured), one line per packet; every `--raw-batch` seconds (default 5) the
+batch is encoded and sent as the state. Columns kept: time (as the delay
+since the previous line), flow id, direction, payload length; a flow table
+gives protocol, an opaque endpoint id and the port. Remote addresses never
+leave the process. Pure TCP acks are counted per flow rather than listed,
+and one computed summary line gives flow, endpoint, packet, byte and pause
+counts. The text is kept under `--raw-budget` tokens (default 12000) by a
+ladder: verbatim lines, then run-length encoding of identical packets, then
+100 ms and 500 ms per-flow bins, then truncation.
+
+Jev tokenizes these digit-heavy lines at about one token per character, so
+a verbatim line costs ~11 tokens. Measured on the same server and
+scenarios, shape mode costs ~1,970 tokens per call every 2 s (about 1,000
+tok/s); raw mode averaged 500 tok/s with 5 s batches and 390 tok/s with 10 s
+batches (idle batches cost ~1,700 tokens, bulk transfers collapse to bins
+at ~3,000), peaking at 10,600 (5 s) and 16,800 (10 s) tokens in one call.
+So it is cheaper, not more expensive.
+
+Accuracy is where it loses. On the same scenarios, bulk transfers are
+recognised as well as in shape mode (large file download 0.98, large file
+upload 0.98), but everything low-volume and interactive gets worse: web
+browsing reads as `claude code`, wallet polling as `unknown` or `claude
+code`, ssh typing as `unknown`, `chat` or `claude code`, where shape mode
+scored 0.8 to 0.9 on each. Longer batches did not help (10 s made browsing,
+wallet and ssh all read as `claude code`). Jev appears to key on gross
+features of the raw log (several flows, small packets, pauses) and does not
+recover rhythm, keystroke cadence or burst structure from hundreds of
+numeric lines the way the reducer's level words state them outright. The
+reduced description remains the better input; the raw path is kept on this
+branch as an experiment.
+
 ## Local test rig
 
 `tools/fake_qube.py` plays a downstream qube on a veth pair (`vif99.0` on
