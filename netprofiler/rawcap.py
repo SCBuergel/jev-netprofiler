@@ -181,10 +181,23 @@ def encode(packets: list[Packet], start_ms: int, budget_tokens: int) -> tuple[st
     bytes_out = sum(p.length for p in data if p.out)
     span_ms = packets[-1].t_ms - packets[0].t_ms
     gaps = sum(1 for a, b in zip(packets, packets[1:]) if b.t_ms - a.t_ms >= 1000)
+    longest_pause = max((b.t_ms - a.t_ms for a, b in zip(packets, packets[1:])), default=0)
+    first_seen = {}
+    last_seen = {}
+    flow_bytes: dict[str, int] = {}
+    for p in packets:
+        first_seen.setdefault(p.flow, p.t_ms)
+        last_seen[p.flow] = p.t_ms
+        flow_bytes[p.flow] = flow_bytes.get(p.flow, 0) + p.length
+    new_flows = sum(1 for k in flows if first_seen[k] - start_ms > 200)  # opened inside the window, not at its edge
+    short_flows = sum(1 for k in flows if last_seen[k] - first_seen[k] < 2000)
+    total_b = sum(flow_bytes.values())
+    top_share = int(100 * max(flow_bytes.values()) / total_b) if total_b else 0
     with_ips = packets[0].label is not None
     header = [
-        f"summary: {len(flows)} flows to {len(endpoints)} endpoints, {len(packets)} packets over {span_ms} ms, "
-        f"{bytes_in} B in, {bytes_out} B out, {gaps} pauses of a second or more",
+        f"summary: {len(flows)} flows to {len(endpoints)} endpoints ({new_flows} opened during the window, {short_flows} lived under 2 s), "
+        f"{len(packets)} packets over {span_ms} ms, {bytes_in} B in, {bytes_out} B out, largest flow carries {top_share}% of bytes, "
+        f"{gaps} pauses of a second or more, longest pause {longest_pause} ms",
         "flows (id proto local:port > remote:port, pure-ack count):" if with_ips else "flows (id proto endpoint, pure-ack count):",
     ]
     for key, fid in flows.items():

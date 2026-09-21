@@ -59,7 +59,7 @@ def load_dataset(data: Path, tag: str, every: int) -> list[dict]:
         if sc == "pre" or not r.get("jev_state"):
             continue
         st = max(x for x in starts[sc] if x <= t)
-        if t - st < WARMUP_S and sc != "idle":
+        if t - st < WARMUP_S:
             continue
         out.append({"tag": tag.split("_")[0], "scenario": sc, "expected": EXPECT[sc], "state": r["jev_state"], "tick": r["ticks"]})
     return out[::every]
