@@ -19,7 +19,7 @@ from typing import Callable
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Digits, Footer, Header, Label, RichLog, Sparkline, Static
+from textual.widgets import Digits, Footer, Header, Input, Label, RichLog, Sparkline, Static
 
 from .config import HISTORY_TICKS, TOP_N
 
@@ -177,12 +177,14 @@ class ProfilerApp(App):
     #empty { content-align: center middle; height: 1fr; color: $text-muted; }
     #raw { height: 45%; border: round $secondary; padding: 0 1; display: none; }
     #raw > .rawtitle { color: $secondary; text-style: bold; height: 1; }
+    #labelbox { display: none; }
     """
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("a", "show_all", "All interfaces"),
         ("x", "hide_selected", "Hide selected"),
         ("d", "toggle_raw", "Raw Jev input"),
+        ("l", "set_label", "Label / record"),
     ] + [(str(i), f"select({i})", f"#{i}") for i in range(1, 10)]
 
     def __init__(self, provider: SnapshotProvider, refresh_s: float = 0.5, on_quit: Callable[[], None] | None = None) -> None:
@@ -203,7 +205,29 @@ class ProfilerApp(App):
         with VerticalScroll(id="raw"):
             yield Label("", classes="rawtitle")
             yield Static("", id="rawbody")
+        yield Input(placeholder="label for recorded samples, e.g. web browsing (empty = stop recording), Enter to apply", id="labelbox")
         yield Footer()
+
+    # -- labelled samples ------------------------------------------------------
+    def action_set_label(self) -> None:
+        box = self.query_one("#labelbox", Input)
+        box.value = self._last.get("label") or ""
+        box.display = True
+        box.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "labelbox":
+            return
+        label = event.value.strip()
+        path = Path(self._last.get("label_file") or "/run/netprofiler/label")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(label + "\n" if label else "")
+            self.notify(f"recording as '{label}'" if label else "recording stopped", timeout=3)
+        except OSError as e:
+            self.notify(f"cannot write {path}: {e}", severity="error", timeout=6)
+        event.input.display = False
+        event.input.blur()
 
     # -- interface selection ------------------------------------------------
     def _visible(self, vif: str) -> bool:
@@ -270,7 +294,8 @@ class ProfilerApp(App):
                 self.log.error(f"pane update failed for {vif}: {e!r}")
         total = sum(float(v.get("total_bits") or 0) for v in vifs.values())
         keys = "  ".join(f"{i+1}:{name}" + ("" if self._visible(name) else " (hidden)") for i, name in enumerate(self._order))
-        self.sub_title = f"{snap.get('mode', 'shape')} mode · {snap.get('tokens_per_s', 0)} tok/s · {len(vifs)} interface(s) · {total:.1f} bits total · {keys}"
+        rec = f" · [REC '{snap['label']}' {snap.get('recorded', 0)}]" if snap.get("label") else ""
+        self.sub_title = f"{snap.get('mode', 'shape')} mode · {snap.get('tokens_per_s', 0)} tok/s · {len(vifs)} interface(s) · {total:.1f} bits total · {keys}{rec}"
         if self._show_raw:
             target = self._selected or next((n for n in self._order if self._visible(n)), None)
             v = vifs.get(target or "", {})

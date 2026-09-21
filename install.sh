@@ -117,7 +117,7 @@ Type=simple
 EnvironmentFile=$DEST/env
 WorkingDirectory=$DEST
 RuntimeDirectory=netprofiler
-ExecStart=$DEST/venv/bin/netprofiler --headless --quiet$SELF_FLAG --catalog $DEST/activities.yaml --state-file /run/netprofiler/state.json
+ExecStart=$DEST/venv/bin/netprofiler --headless --quiet$SELF_FLAG --catalog $DEST/activities.yaml --state-file /run/netprofiler/state.json --record $DEST/samples.jsonl --label-file /run/netprofiler/label
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM
@@ -126,7 +126,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/run/netprofiler
+ReadWritePaths=/run/netprofiler $DEST
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 
@@ -172,3 +172,4 @@ else
 fi
 [ "$SELF" = "1" ] && echo "this qube's own applications are profiled too (pane 'self'); SELF=0 ./install.sh turns that off"
 echo "watch it:  sudo $DEST/venv/bin/netprofiler --attach /run/netprofiler/state.json"
+echo "record labelled samples: press l in the viewer (or: echo 'web browsing' | sudo tee /run/netprofiler/label); they land in $DEST/samples.jsonl"

@@ -49,6 +49,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true", help="never call Jev; use a fake client")
     p.add_argument("--api-key", default=None, help="TypeSafe API key (default: $TYPESAFE_API_KEY)")
     p.add_argument("--model", default=MODEL)
+    p.add_argument("--record", type=Path, default=None, help="append labelled samples (exact Jev input + answer) to this JSONL file while a label is set")
+    p.add_argument("--label-file", type=Path, default=Path("/run/netprofiler/label"), help="file holding the current sample label; empty = not recording (default /run/netprofiler/label)")
     p.add_argument("--population", type=int, default=DEFAULT_POPULATION, help="population for the anonymity-set figure")
     p.add_argument("--log", type=Path, default=None, help="log file (default: stderr in --headless, none in TUI)")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -75,6 +77,8 @@ def settings_from(args: argparse.Namespace) -> Settings:
     s.headless = args.headless
     s.state_file = args.state_file
     s.population = args.population
+    s.record_path = args.record
+    s.label_file = args.label_file
     s.api_key = args.api_key
     s.model = args.model
     return s

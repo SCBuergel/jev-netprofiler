@@ -74,6 +74,8 @@ class Settings:
     dry_run: bool = False  # reduce and print, never call Jev
     headless: bool = False  # no TUI; log ticks as JSON lines to stdout
     state_file: Path | None = None  # JSON snapshot written every tick
+    record_path: Path | None = None  # append labelled samples here while a label is set
+    label_file: Path = Path("/run/netprofiler/label")  # current label; empty or absent = not recording
     population: int = DEFAULT_POPULATION
     api_key: str | None = None
     model: str = MODEL

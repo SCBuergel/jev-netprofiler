@@ -65,6 +65,25 @@ def load_dataset(data: Path, tag: str, every: int) -> list[dict]:
     return out[::every]
 
 
+def load_samples(paths: list[Path], every: int, catalog_path: Path) -> list[dict]:
+    """Samples recorded live with --record: one JSON line per tick with the
+    label, mode, exact state and Jev's answer. Labels are catalog names."""
+    from netprofiler.catalog import _key, load_catalog
+
+    keys = {a.key for a in load_catalog(catalog_path)}
+    out = []
+    for path in paths:
+        for line in open(path):
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            label = _key(r["label"])
+            if label not in keys:
+                raise SystemExit(f"{path}: label {r['label']!r} is not a catalog activity ({sorted(keys)})")
+            out.append({"tag": r["mode"], "scenario": r["label"], "expected": label, "state": r["state"], "tick": r.get("t")})
+    return out[::every]
+
+
 def instructions_variant(name: str) -> dict:
     from importlib import import_module
 
@@ -101,7 +120,8 @@ async def evaluate(samples: list[dict], catalog_path: Path, instr: str, concurre
 
 
 def report(results: list[dict], tags: list[str]) -> None:
-    order = ["browsing", "download", "upload", "wallet", "chat", "torrent", "ssh_typing", "idle"]
+    known = ["browsing", "download", "upload", "wallet", "chat", "torrent", "ssh_typing", "idle"]
+    order = known + sorted({r["scenario"] for r in results} - set(known))
     print(f"{'scenario':<11}" + "".join(f"| {t:<30}" for t in tags))
     totals = {t: [0, 0, 0.0] for t in tags}
     for sc in order:
@@ -115,7 +135,7 @@ def report(results: list[dict], tags: list[str]) -> None:
             p = sum(r["p_expected"] for r in rs) / len(rs)
             top = Counter(r["choice"] for r in rs).most_common(1)[0][0]
             cells.append(f"{acc:.0%} p={p:.2f} ({top}, n={len(rs)})")
-            if sc != "idle":
+            if sc not in ("idle", "idle "):
                 totals[t][0] += sum(r["choice"] == r["expected"] for r in rs)
                 totals[t][1] += len(rs)
                 totals[t][2] += sum(r["p_expected"] for r in rs)
@@ -125,7 +145,9 @@ def report(results: list[dict], tags: list[str]) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", type=Path, required=True)
+    ap.add_argument("--data", type=Path, default=None, help="directory with ds_<tag>.jsonl + ds_scen_<tag>.log recordings")
+    ap.add_argument("--samples", type=Path, nargs="*", default=[], help="samples.jsonl files recorded live with --record")
+    ap.add_argument("--list", action="store_true", help="only count samples per label and mode, no Jev calls")
     ap.add_argument("--tags", default="shape,raw,rawips")
     ap.add_argument("--catalog", type=Path, default=Path("tools/questions/v0.yaml"))
     ap.add_argument("--instructions", default="v0")
@@ -135,9 +157,20 @@ def main() -> None:
     ap.add_argument("--scenarios", default=None, help="comma-separated subset of scenarios")
     ap.add_argument("--summary-field", action="store_true", help="raw states: move the summary line into its own state field")
     args = ap.parse_args()
-    tags = args.tags.split(",")
-    samples = [s for t in tags for s in load_dataset(args.data, t, args.every)]
-    tags = list(dict.fromkeys(t.split("_")[0] for t in tags))  # report per mode
+    every = 1 if args.list else args.every
+    samples = []
+    if args.data:
+        samples += [s for t in args.tags.split(",") for s in load_dataset(args.data, t, every)]
+    if args.samples:
+        samples += load_samples(args.samples, every, args.catalog)
+    if not samples:
+        raise SystemExit("nothing to evaluate: pass --data DIR and/or --samples FILE...")
+    tags = list(dict.fromkeys(s["tag"] for s in samples))  # report per mode
+    if args.list:
+        counts = Counter((s["tag"], s["scenario"]) for s in samples)
+        for (tag, sc), n in sorted(counts.items()):
+            print(f"{tag:<8} {sc:<24} {n}")
+        return
     if args.scenarios:
         keep = set(args.scenarios.split(","))
         samples = [s for s in samples if s["scenario"] in keep]

@@ -68,6 +68,8 @@ class Engine:
         self.calls = 0
         self._t_start = time.time()
         self._last_batch_end_ms: dict[str, int] = {}
+        self.label: str = ""  # current sample label, read from settings.label_file every tick
+        self.recorded = 0
 
     # -- wiring -----------------------------------------------------------
     def on_update(self, hook: UpdateHook) -> None:
@@ -174,6 +176,7 @@ class Engine:
         from .rawcap import encode
 
         assert self.raw is not None
+        self.read_label()
         end_ms = now_ms() - 300  # let tcpdump's line buffer drain
         for name, s in list(self.sessions.items()):
             cap = self.raw.captures.get(name)
@@ -202,8 +205,39 @@ class Engine:
             s.jev_state = self.client.build_state(text, s.previous)
             s.task = asyncio.get_event_loop().create_task(self._ask(s, s.jev_state))
 
+    # -- labelled samples ------------------------------------------------------
+    def read_label(self) -> str:
+        try:
+            self.label = self.settings.label_file.read_text().strip()
+        except OSError:
+            self.label = ""
+        return self.label
+
+    def record(self, s: VifSession, answer: Answer) -> None:
+        """Append one labelled sample: exactly what Jev saw and what it said."""
+        if not self.settings.record_path or not self.label:
+            return
+        line = {
+            "t": time.time(),
+            "iface": s.vif,
+            "mode": self.settings.mode,
+            "label": self.label,
+            "state": s.jev_state,
+            "answer": {"choice": answer.top, "confidence": answer.confidence, "probabilities": answer.probabilities,
+                       "intensity": answer.intensity, "interactivity": answer.interactivity, "nouls": answer.nouls},
+            "input_tokens": answer.input_tokens,
+        }
+        try:
+            self.settings.record_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.settings.record_path, "a") as f:
+                f.write(json.dumps(line) + "\n")
+            self.recorded += 1
+        except OSError as e:
+            log.warning("could not record sample: %s", e)
+
     # -- one tick ----------------------------------------------------------
     def tick(self) -> None:
+        self.read_label()
         self.capture.flush()
         for vif, s in list(self.sessions.items()):
             window = self.capture.windows.get(vif)
@@ -268,6 +302,7 @@ class Engine:
             self.tokens_in += answer.input_tokens
         self.calls += 1
         events = s.analysis.ingest(answer, NOUL_EVENT_THRESHOLD)
+        self.record(s, answer)
         s.previous = PreviousTop(sorted(answer.probabilities.items(), key=lambda kv: kv[1], reverse=True)[:3])
         s.status = "ok"
         s.last_error = None
@@ -290,6 +325,10 @@ class Engine:
             "tokens_in": self.tokens_in,
             "calls": self.calls,
             "tokens_per_s": round(self.tokens_in / elapsed, 1),
+            "label": self.label,
+            "recorded": self.recorded,
+            "record_path": str(self.settings.record_path) if self.settings.record_path else None,
+            "label_file": str(self.settings.label_file),
             "vifs": {},
         }
         for vif, s in self.sessions.items():

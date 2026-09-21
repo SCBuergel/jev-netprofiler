@@ -118,6 +118,31 @@ costs ~11 tokens. Unsolicited inbound noise (scans answered with a reset,
 lone inbound UDP, pings, any flow that never carries payload) is dropped
 before encoding.
 
+## Recording labelled samples
+
+The service can save exactly what Jev saw and answered while you do a known
+activity, so the question set can be tuned offline on your own traffic.
+
+1. Start the activity in the qube you are profiling (say, browsing).
+2. In the viewer press `l`, type the activity's catalog name (`web browsing`,
+   `ssh`, `chat`, ...), Enter. From now on every tick's Jev input and answer
+   for every interface is appended to `/rw/config/netprofiler/samples.jsonl`,
+   and the header shows `[REC 'web browsing' N]`. Without the viewer:
+   `echo 'web browsing' | sudo tee /run/netprofiler/label`.
+3. Keep the activity going for a minute or two, then press `l` and Enter
+   with an empty label (or `sudo truncate -s0 /run/netprofiler/label`) to stop.
+   Repeat per activity; include some `idle`.
+4. Hand over `samples.jsonl`. Each line holds the timestamp, interface, mode,
+   label, the `state` sent to Jev and Jev's answer; in the default mode it
+   contains no addresses or ports. Score any question set on it with:
+   ```sh
+   python tools/eval_questions.py --samples samples.jsonl --list
+   python tools/eval_questions.py --samples samples.jsonl --catalog tools/questions/v4.yaml --instructions v4
+   ```
+
+Recording is off whenever the label is empty, so the file only grows while
+you are collecting. By hand: `--record FILE --label-file FILE`.
+
 ## Question tuning
 
 In TypeSafe terms the "prompt" is the question set: the Choice question's
