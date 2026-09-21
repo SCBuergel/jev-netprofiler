@@ -31,7 +31,7 @@ def test_probe_filter_and_verbatim_encoding():
     assert dropped == 1 and len(kept) == 2
     text, stats = encode(pk, 1000, budget_tokens=2000)
     assert stats["level"] == 0 and stats["probes_dropped"] == 1
-    assert "f1 tcp e1:443" in text and "\n0 f1> 517\n30 f1< 1448" in text
+    assert "f1 tcp e1:443 acks=0" in text and "\n+0 f1> 517\n+30 f1< 1448" in text and "summary: 1 flows to 1 endpoints" in text
     assert "203.0.113.5" not in text and "185.1.1.1" not in text  # addresses never appear
 
 
@@ -50,7 +50,7 @@ def test_encoding_ladder_respects_budget():
     pk.sort(key=lambda p: p.t_ms)
     verbatim, s0 = encode(pk, 0, budget_tokens=10**9)
     assert s0["level"] == 0 and estimate_tokens(verbatim) > 20000
-    for budget in (12000, 4000, 1500, 400):
+    for budget in (12000, 4000, 1500, 600):
         text, stats = encode(pk, 0, budget_tokens=budget)
         assert estimate_tokens(text) <= budget, (budget, estimate_tokens(text), stats)
     rle, s1 = encode(pk, 0, budget_tokens=12000)

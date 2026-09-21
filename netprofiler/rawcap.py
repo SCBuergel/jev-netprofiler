@@ -148,8 +148,8 @@ def _as_seg_like(p: Packet) -> FlowSeg:  # type: ignore[return-value]
 
 # --------------------------------------------------------------- encoding --
 def estimate_tokens(text: str) -> int:
-    # digits-heavy text tokenizes worse than prose; ~3.2 chars per token
-    return int(len(text) / 3.2) + 1
+    # measured on jev-1.13.0: packet logs tokenize at about 1.07 chars per token
+    return int(len(text) / 1.05) + 1
 
 
 def drop_probes(packets: list[Packet]) -> tuple[list[Packet], int]:
@@ -175,74 +175,94 @@ def encode(packets: list[Packet], start_ms: int, budget_tokens: int) -> tuple[st
     if not packets:
         return "no packets in this batch", stats
 
-    # flow and endpoint tables
+    # flow and endpoint tables; zero-length TCP packets (pure acks) are only counted
     flows: dict[tuple, int] = {}
     endpoints: dict[str, int] = {}
+    acks: dict[tuple, int] = {}
     for p in packets:
         endpoints.setdefault(p.remote_ip, len(endpoints) + 1)
         flows.setdefault(p.tuple4, len(flows) + 1)
-    header = ["flows (id proto endpoint:port):"]
-    for (proto, _lport, _ep), fid in flows.items():
-        p0 = next(p for p in packets if p.tuple4 == (proto, _lport, _ep))
-        header.append(f"f{fid} {'tcp' if proto == 6 else 'udp'} e{endpoints[p0.remote_ip]}:{p0.remote_port}")
-    head = "\n".join(header) + "\npackets (ms flow dir len; dir > out < in):\n"
+        if p.proto == 6 and p.length == 0:
+            acks[p.tuple4] = acks.get(p.tuple4, 0) + 1
+    data = [p for p in packets if not (p.proto == 6 and p.length == 0)]
+    bytes_in = sum(p.length for p in data if not p.out)
+    bytes_out = sum(p.length for p in data if p.out)
+    span_ms = packets[-1].t_ms - packets[0].t_ms
+    gaps = sum(1 for a, b in zip(packets, packets[1:]) if b.t_ms - a.t_ms >= 1000)
+    header = [
+        f"summary: {len(flows)} flows to {len(endpoints)} endpoints, {len(packets)} packets over {span_ms} ms, "
+        f"{bytes_in} B in, {bytes_out} B out, {gaps} pauses of a second or more",
+        "flows (id proto endpoint:port, pure-ack count):",
+    ]
+    for key, fid in flows.items():
+        p0 = next(p for p in packets if p.tuple4 == key)
+        header.append(f"f{fid} {'tcp' if key[0] == 6 else 'udp'} e{endpoints[p0.remote_ip]}:{p0.remote_port} acks={acks.get(key, 0)}")
+    head = "\n".join(header) + "\npackets (+ms since previous line, flow, dir > out < in, len):\n"
     stats["flows"] = len(flows)
     stats["endpoints"] = len(endpoints)
 
-    def line_plain(p: Packet) -> str:
-        return f"{p.t_ms - start_ms} f{flows[p.tuple4]}{'>' if p.out else '<'} {p.length}"
+    def lines_plain(pk: list[Packet]) -> list[str]:
+        out, prev = [], start_ms
+        for p in pk:
+            out.append(f"+{p.t_ms - prev} f{flows[p.tuple4]}{'>' if p.out else '<'} {p.length}")
+            prev = p.t_ms
+        return out
 
-    # level 0: verbatim
-    body = "\n".join(line_plain(p) for p in packets)
+    # level 0: verbatim data packets
+    body = "\n".join(lines_plain(data))
     if estimate_tokens(head + body) <= budget_tokens:
         return head + body, stats
 
     # level 1: run-length encode same flow/dir/size runs
     stats["level"] = 1
     runs: list[str] = []
-    i = 0
-    while i < len(packets):
-        p = packets[i]
+    i, prev = 0, start_ms
+    while i < len(data):
+        p = data[i]
         j = i + 1
-        while j < len(packets) and packets[j].tuple4 == p.tuple4 and packets[j].out == p.out and packets[j].length == p.length:
+        while j < len(data) and data[j].tuple4 == p.tuple4 and data[j].out == p.out and data[j].length == p.length:
             j += 1
         n = j - i
         if n == 1:
-            runs.append(line_plain(p))
+            runs.append(f"+{p.t_ms - prev} f{flows[p.tuple4]}{'>' if p.out else '<'} {p.length}")
         else:
-            span = packets[j - 1].t_ms - p.t_ms
-            runs.append(f"{p.t_ms - start_ms} f{flows[p.tuple4]}{'>' if p.out else '<'} {p.length} x{n} over {span}ms")
+            runs.append(f"+{p.t_ms - prev} f{flows[p.tuple4]}{'>' if p.out else '<'} {p.length} x{n} over {data[j - 1].t_ms - p.t_ms}ms")
+        prev = data[j - 1].t_ms
         i = j
     body = "\n".join(runs)
     if estimate_tokens(head + body) <= budget_tokens:
         return head + body, stats
 
     # levels 2/3: per-flow bins
+    head2 = head
     for level, bin_ms in ((2, 100), (3, 500)):
         stats["level"] = level
         bins: dict[tuple[int, int, bool], list[int]] = {}
-        for p in packets:
+        for p in data:
             k = ((p.t_ms - start_ms) // bin_ms, flows[p.tuple4], p.out)
             bins.setdefault(k, []).append(p.length)
         lines = [f"{b * bin_ms} f{fid}{'>' if out else '<'} {len(ls)}p {sum(ls)}B" for (b, fid, out), ls in sorted(bins.items())]
         body = "\n".join(lines)
-        head2 = head.replace("packets (ms flow dir len; dir > out < in):", f"packets binned per {bin_ms}ms (ms flow dir count bytes; dir > out < in):")
+        head2 = head.replace(
+            "packets (+ms since previous line, flow, dir > out < in, len):",
+            f"packets binned per {bin_ms} ms (bin start ms, flow, dir > out < in, packet count, bytes):",
+        )
         if estimate_tokens(head2 + body) <= budget_tokens:
             return head2 + body, stats
     # level 4: truncate
     stats["level"] = 4
-    keep_chars = max(0, int(budget_tokens * 3.2) - len(head2) - 60)
+    keep_chars = max(0, int(budget_tokens * 1.05) - len(head2) - 60)
     cut = body[:keep_chars].rsplit("\n", 1)[0]
     omitted = body.count("\n") - cut.count("\n")
     return head2 + cut + f"\n... {omitted} more lines omitted", stats
 
 
 RAW_LEGEND = (
-    "A headers-only packet log of one network link over a few seconds. No payload, no addresses: "
-    "endpoints are opaque ids, flows are numbered, ports are real. Each packet line is milliseconds "
-    "since the batch start, the flow id with direction (> sent by this machine, < received), and the "
-    "payload length in bytes; 'x N over M ms' means N identical packets back to back; binned lines give "
-    "packet count and bytes per time bin. Judge the activity from timing, sizes, directions and flow structure."
+    "A headers-only packet log of one network link over one batch of a few seconds. No payload, no addresses: "
+    "endpoints are opaque ids, flows are numbered, ports are real. Pure TCP acks are not listed, only counted per flow. "
+    "Each packet line is the delay in ms since the previous line, the flow id with direction (> sent by this machine, "
+    "< received), and the payload length in bytes; 'x N over M ms' means N identical packets back to back; binned lines "
+    "give packet count and bytes per time bin. Judge the activity from timing, sizes, directions and flow structure."
 )
 
 
