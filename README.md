@@ -2,14 +2,14 @@
 
 Shows what a network gateway can tell about you from traffic *shape* alone.
 
-It watches the network interfaces of a Qubes OS net-qube, turns each ten
-seconds of flow metadata into a short text made only of level words (no
-addresses, ports, sizes or timestamps), asks TypeSafe's Jev model which
-activity from a small catalog that shape looks like, and displays the answer
-in a terminal UI with a running count of identifying bits. Jev never sees a
-number; all arithmetic is local Python. Addresses and ports are hashed with
-a per-process salt the moment a packet or flow record is parsed and are
-never stored, in either mode.
+It watches the network interfaces of a Qubes OS net-qube, turns the last ten
+seconds of traffic into a headers-only packet log (or, in shape mode, into a
+short prose description made of level words), asks TypeSafe's Jev model
+which activity from a small catalog that traffic looks like, and displays
+the answer in a terminal UI with a running count of identifying bits. No
+payload is ever captured. In the default mode addresses and ports are hashed
+with a per-process salt the moment a packet is parsed and are never stored;
+Jev sees flows and endpoints only as small numbers.
 
 ![terminal UI](docs/screenshot.png)
 
@@ -21,15 +21,16 @@ never stored, in either mode.
   out.
 - Any other Linux box in self mode: `netprofiler --self --self-iface <iface>`.
 - Root is needed for packet capture. Python 3.11+ (template needs
-  `python3-venv`, or `uv` in the qube). libpcap is bundled in the nfstream
-  wheel.
+  `python3-venv`, or `uv` in the qube) and `tcpdump`. libpcap for shape mode
+  is bundled in the nfstream wheel.
 - A TypeSafe API key (`TYPESAFE_API_KEY`).
 
 ## Install on a Qubes net-qube
 
-1. In the template: `sudo apt install python3 python3-venv git`, shut it
-   down, restart the net-qube. (Alternative without touching the template:
-   `curl -LsSf https://astral.sh/uv/install.sh | sh` inside the qube.)
+1. In the template: `sudo apt install python3 python3-venv git tcpdump`,
+   shut it down, restart the net-qube. (Without touching the template you
+   can replace the venv part with `curl -LsSf https://astral.sh/uv/install.sh | sh`
+   inside the qube, but tcpdump has to come from the template.)
 2. In the qube:
    ```sh
    git clone https://github.com/SCBuergel/jev-netprofiler.git
@@ -72,9 +73,11 @@ prints them.
 uv venv .venv && uv pip install -p .venv/bin/python -e '.[dev]'
 export TYPESAFE_API_KEY=...
 
-sudo -E .venv/bin/netprofiler                    # net-qube mode, TUI
+sudo -E .venv/bin/netprofiler                    # vif* interfaces, default raw mode, TUI
 sudo -E .venv/bin/netprofiler --self             # plus this qube's own apps
-.venv/bin/netprofiler --pcap file.pcap --speed 2 # replay a capture offline
+sudo -E .venv/bin/netprofiler --mode shape       # prose description instead of a packet log
+sudo -E .venv/bin/netprofiler --mode raw-ips     # real addresses and ports in the log
+.venv/bin/netprofiler --pcap file.pcap --speed 2 # replay a capture offline (shape mode)
 .venv/bin/netprofiler --headless --show-shape --pcap file.pcap --dry-run   # no API calls
 .venv/bin/pytest
 ```
@@ -82,12 +85,13 @@ sudo -E .venv/bin/netprofiler --self             # plus this qube's own apps
 `--include-own-traffic` keeps the profiler's own Jev calls in the self pane
 (they read as `wallet polling rpc`, which is the point of excluding them).
 `--self-iface` picks the interface for self mode (default `eth0`).
+`--raw-batch`, `--raw-window` and `--raw-budget` tune the raw modes.
 `--local-net CIDR` sets which side of a flow is the downstream qube when the
 SYN direction and private/public split cannot tell. `--no-heartbeat` stops
 the one-packet-per-second multicast keepalive that lets nfstream expire idle
 flows on a silent vif.
 
-## How it works
+## How shape mode works
 
 Every 2 s per interface: nfstream flow segments from the last 10 s are
 reduced to statistics (flows, endpoints, direction, bursts and gaps, packet
@@ -101,26 +105,18 @@ outstanding is dropped. Shannon entropy of the Choice distribution gives
 bits = log2(N) - H; bits accumulate once per activity episode (episodes
 follow the 4-tick smoothed top answer); anonymity set = population / 2^bits.
 
-## Raw-packet mode (experimental, this branch)
+## How the raw modes work
 
-`--raw` replaces the reduced description with a filtered packet log.
-`tcpdump -nn -tt -q -l -s 96` records headers only (payload is never
-captured), one line per packet; every `--raw-batch` seconds (default 5) the
-last `--raw-window` seconds (default: the batch) are encoded and sent as the
-state. Columns kept: time (as the delay since the previous line), flow id,
-direction, payload length; a flow table gives protocol and an opaque
-endpoint id, and a summary line gives flow, endpoint, packet, byte and pause
-counts plus how many flows opened during the window and lived under 2 s.
-Pure TCP acks are counted per flow rather than listed. The text is kept
-under `--raw-budget` tokens (default 12000) by a ladder: verbatim lines,
-then run-length encoding of identical packets, then 100 ms and 500 ms
-per-flow bins, then truncation. Jev tokenizes these digit-heavy lines at
-about one token per character, so a verbatim line costs ~11 tokens.
-
-`--raw-ips` is a third, opt-in mode that keeps the real local and remote
-addresses and ports in the flow table. In the other two modes addresses and
-ports are hashed with a per-process salt while a record is parsed and never
-stored.
+The summary line reports flows, endpoints, packets, bytes, pauses, how many
+flows opened during the window and how many lived under 2 s, and the
+largest flow's share of bytes. Pure TCP acks are counted per flow rather
+than listed. The text is kept under `--raw-budget` tokens (default 12000)
+by a ladder: verbatim lines, then run-length encoding of identical packets,
+then 100 ms and 500 ms per-flow bins, then truncation. Jev tokenizes these
+digit-heavy lines at about one token per character, so a verbatim line
+costs ~11 tokens. Unsolicited inbound noise (scans answered with a reset,
+lone inbound UDP, pings, any flow that never carries payload) is dropped
+before encoding.
 
 ## Question tuning
 
@@ -152,7 +148,7 @@ reset, so question variants are compared on identical inputs.
 Offline accuracy on the same recorded windows (top answer, non-idle
 scenarios; chat and ssh-typing counted as in the table below):
 
-| set | shape | raw (10 s window) | raw with addresses |
+| set | shape | raw (default) | raw-ips |
 |---|---|---|---|
 | v0 | 52 % | 54 % | 62 % |
 | v3 | 82 % | 66 % | 74 % |
@@ -160,7 +156,7 @@ scenarios; chat and ssh-typing counted as in the table below):
 
 Per scenario with v4 (accuracy, mean probability on the right answer):
 
-| scenario | shape | raw | raw with addresses |
+| scenario | shape | raw (default) | raw-ips |
 |---|---|---|---|
 | web browsing | 100 %, 0.87 | 40 %, 0.28 | 60 %, 0.37 |
 | large file download | 100 %, 1.00 | 100 %, 1.00 | 100 %, 1.00 |
@@ -180,8 +176,8 @@ direction-agnostic and survives it). Addresses help raw mode mostly on
 ssh and browsing; their cost is that every destination is sent to Jev.
 
 Cost per mode (one call every 2 s, measured live): shape ~1,000 tok/s;
-raw with a 10 s window ~2,100 tok/s; raw with addresses about the same
-plus the address text. The v4 questions add ~18 % to every call over v0.
+raw ~2,100 tok/s; raw-ips about the same plus the address text. The v4
+questions add ~18 % to every call over v0.
 
 ## Local test rig
 

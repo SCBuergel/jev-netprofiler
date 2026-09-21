@@ -8,8 +8,9 @@
 # boot (an AppVM's /etc is not persistent), and starts the service.
 #
 # Needs python3 >= 3.11 that can create a venv with pip (Debian: the
-# python3-venv package in the template), or uv in the qube, plus network
-# access to fetch wheels. libpcap is bundled in the nfstream wheel.
+# python3-venv package in the template), or uv in the qube, tcpdump (the
+# default capture mode), plus network access to fetch wheels. libpcap for
+# shape mode is bundled in the nfstream wheel.
 # The API key is taken from TYPESAFE_API_KEY, else from ./.env, else you are
 # asked to edit the env file afterwards.
 #
@@ -40,6 +41,7 @@ fi
 
 # --- preflight ---------------------------------------------------------------
 command -v python3 >/dev/null || die "python3 not found; install python3 in the template"
+command -v tcpdump >/dev/null || die "tcpdump not found; install it in the template (apt install tcpdump): the default capture mode needs it"
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
     || die "python3 >= 3.11 required, found $(python3 --version 2>&1)"
 # uv if available (also under the invoking user's home when run via sudo),

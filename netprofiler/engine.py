@@ -280,7 +280,7 @@ class Engine:
         out = {
             "t": time.time(),
             "catalog_size": len(self.catalog),
-            "mode": "raw" if self.settings.raw else "shape",
+            "mode": self.settings.mode,
             "tokens_in": self.tokens_in,
             "calls": self.calls,
             "tokens_per_s": round(self.tokens_in / elapsed, 1),

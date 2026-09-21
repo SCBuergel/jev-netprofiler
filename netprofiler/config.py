@@ -56,11 +56,21 @@ class Settings:
     self_capture: bool = False  # also profile this qube's own apps on eth0
     self_iface: str = "eth0"  # interface for --self (override only for testing)
     include_own: bool = False  # debugging: do not exclude the profiler's own flows
-    raw: bool = False  # raw-packet mode: tcpdump log instead of the reduced description
-    raw_batch_s: float = 5.0  # one Jev call per interface every this many seconds
+    # Capture modes. "raw": a headers-only tcpdump log, addresses and ports never
+    # stored (default). "raw-ips": the same log with real addresses and ports in
+    # the flow table. "shape": nfstream flows reduced to a prose description.
+    mode: str = "raw"
+    raw_batch_s: float = 2.0  # one Jev call per interface every this many seconds
+    raw_window_s: float = 10.0  # seconds of log per call (0 = the batch period, no overlap)
     raw_budget_tokens: int = 12000  # ceiling for the packet log per call
-    raw_window_s: float = 0.0  # seconds of log per call; 0 = the batch period (no overlap)
-    raw_ips: bool = False  # opt-in: real addresses and ports in the raw log (stored and sent)
+
+    @property
+    def raw(self) -> bool:
+        return self.mode in ("raw", "raw-ips")
+
+    @property
+    def raw_ips(self) -> bool:
+        return self.mode == "raw-ips"
     dry_run: bool = False  # reduce and print, never call Jev
     headless: bool = False  # no TUI; log ticks as JSON lines to stdout
     state_file: Path | None = None  # JSON snapshot written every tick

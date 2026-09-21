@@ -75,3 +75,11 @@ def test_raw_ips_mode_is_opt_in():
     assert p.label == "10.137.0.10:51000 > 203.0.113.5:443"
     text, _ = encode([p, parse_line("1758412345.2 IP 203.0.113.5.443 > 10.137.0.10.51000: tcp 1448", LOCAL, keep_ips=True)], 1758412345123, 5000)
     assert "f1 tcp 10.137.0.10:51000 > 203.0.113.5:443 acks=0" in text
+
+
+def test_mode_defaults():
+    from netprofiler.config import Settings
+
+    s = Settings()
+    assert s.mode == "raw" and s.raw and not s.raw_ips and s.raw_batch_s == 2.0 and s.raw_window_s == 10.0
+    assert Settings(mode="raw-ips").raw_ips and not Settings(mode="shape").raw

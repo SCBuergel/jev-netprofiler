@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -292,6 +293,8 @@ class RawCaptureManager:
         self.on_new_vif = None
 
     def add(self, name: str, iface: str) -> None:
+        if shutil.which("tcpdump") is None:
+            raise SystemExit("tcpdump not found: install it (apt install tcpdump) or use --mode shape")
         local_ips = {a.split("/")[0] for a in SelfCapture.local_addresses(iface)}
         cap = TcpdumpCapture(iface, local_ips, self.own, keep_ips=self.keep_ips)
         self.captures[name] = cap
