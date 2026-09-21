@@ -56,6 +56,7 @@ class VifPane(Vertical):
     VifPane { border: round $accent; padding: 0 1; width: 1fr; height: 1fr; }
     VifPane > .title { text-style: bold; color: $accent; }
     VifPane > .status { color: $text-muted; }
+    VifPane > .error { color: $error; text-style: bold; display: none; }
     VifPane > .activity { text-style: bold; height: 2; }
     VifPane > .bars { height: 7; }
     VifPane > .sparklabel { color: $text-muted; height: 1; }
@@ -70,10 +71,12 @@ class VifPane(Vertical):
         super().__init__(id=pane_id(vif))
         self.vif = vif
         self._logged_events = 0
+        self._logged_error: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Label("self (this qube's apps on eth0)" if self.vif == "self" else self.vif, classes="title")
         yield Label("starting", classes="status")
+        yield Static("", classes="error")
         yield Static("—", classes="activity")
         yield Static("", classes="bars")
         yield Label("confidence · last 60 ticks", classes="sparklabel")
@@ -92,9 +95,22 @@ class VifPane(Vertical):
             extra += f"  jev {v['latency_s']*1000:.0f}ms"
         if v.get("excluded"):
             extra += f"  excluded {v['excluded']}"
-        if v.get("error"):
-            extra += f"  [red]{v['error']}[/]"
+        if v.get("errors"):
+            extra += f"  [red]errors {v['errors']}[/]"
         self.query_one(".status", Label).update(status + extra)
+
+        # API errors get their own wrapped line and a log entry, never a cropped tail
+        err = self.query_one(".error", Static)
+        message = v.get("error")
+        if message:
+            age = time.time() - float(v.get("error_at") or time.time())
+            err.update(Text(f"Jev call failed {age:.0f} s ago: {message}", style="bold red"))
+            err.display = True
+            if message != self._logged_error:
+                self.query_one("#events", RichLog).write(f"[red]jev error:[/] {message}")
+                self._logged_error = message
+        else:
+            err.display = False
 
         cur = v.get("current")
         conf = v.get("confidence")

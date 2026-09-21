@@ -35,6 +35,8 @@ class VifSession:
     jev_state: dict = field(default_factory=dict)  # exactly what the last call sent
     status: str = "starting"
     last_error: str | None = None
+    last_error_at: float = 0.0
+    errors: int = 0
     excluded: str = ""  # self capture: how many flows were left out and why
     ticks: int = 0
     task: asyncio.Task | None = None
@@ -249,7 +251,9 @@ class Engine:
         try:
             answer = await self.client.ask(s.vif, state)
         except Exception as e:
-            s.last_error = f"{type(e).__name__}: {e}"[:120]
+            s.last_error = f"{type(e).__name__}: {e}"[:600]
+            s.last_error_at = time.time()
+            s.errors += 1
             s.status = "error"
             log.warning("jev call failed for %s: %s", s.vif, e)
             self._emit(s, None, [])
@@ -292,6 +296,8 @@ class Engine:
             out["vifs"][vif] = {
                 "status": s.status,
                 "error": s.last_error,
+                "error_at": s.last_error_at,
+                "errors": s.errors,
                 "excluded": s.excluded,
                 "ticks": s.ticks,
                 "answered": a.answered_ticks,
