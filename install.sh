@@ -59,6 +59,8 @@ MSG
     exit 1
 fi
 
+case "$DEST" in /home/*|/root|/root/*) die "DEST=$DEST is under a home directory, which the unit's ProtectHome hides; install elsewhere (default /rw/config/netprofiler)";; esac
+
 # --- files -------------------------------------------------------------------
 step "copying files to $DEST"
 mkdir -p "$DEST"
