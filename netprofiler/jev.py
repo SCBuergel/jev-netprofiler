@@ -85,7 +85,7 @@ ACTIVITY_INSTRUCTIONS = {
 
 
 def build_questions(catalog: list[Activity], raw: bool = False) -> dict:
-    """The same questions for every mode (question set v3, see tools/questions)."""
+    """The same questions for every mode (question set v4, see tools/questions)."""
     instructions = ACTIVITY_INSTRUCTIONS
     return {
         "activity": Choice(instructions=instructions, criteria=criteria(catalog)),

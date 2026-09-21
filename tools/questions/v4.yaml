@@ -1,4 +1,4 @@
-# Activity catalog (question set v4). Each entry is one option of the Jev Choice question:
+# Question set v4: v3 plus packet-log cues for browsing vs download.
 activities:
   - name: idle
     shape: Silent or nearly silent link; at most a few tiny keepalive packets with long idle gaps and no bursts.

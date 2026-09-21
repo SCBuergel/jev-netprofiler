@@ -132,10 +132,21 @@ def main() -> None:
     ap.add_argument("--every", type=int, default=4)
     ap.add_argument("--concurrency", type=int, default=6)
     ap.add_argument("--save", type=Path, default=None)
+    ap.add_argument("--scenarios", default=None, help="comma-separated subset of scenarios")
+    ap.add_argument("--summary-field", action="store_true", help="raw states: move the summary line into its own state field")
     args = ap.parse_args()
     tags = args.tags.split(",")
     samples = [s for t in tags for s in load_dataset(args.data, t, args.every)]
     tags = list(dict.fromkeys(t.split("_")[0] for t in tags))  # report per mode
+    if args.scenarios:
+        keep = set(args.scenarios.split(","))
+        samples = [s for s in samples if s["scenario"] in keep]
+    if args.summary_field:
+        for s in samples:
+            log = s["state"].get("packet_log")
+            if log and log.startswith("summary:"):
+                first, _, rest = log.partition("\n")
+                s["state"] = {"legend": s["state"]["legend"], "summary": first[len("summary: "):], "packet_log": rest, **{k: v for k, v in s["state"].items() if k not in ("legend", "packet_log")}}
     print(f"{len(samples)} samples, catalog {args.catalog}, instructions {args.instructions}")
     results, tokens = asyncio.run(evaluate(samples, args.catalog, args.instructions, args.concurrency))
     report(results, tags)
