@@ -254,7 +254,7 @@ class ProfilerApp(App):
                 self.log.error(f"pane update failed for {vif}: {e!r}")
         total = sum(float(v.get("total_bits") or 0) for v in vifs.values())
         keys = "  ".join(f"{i+1}:{name}" + ("" if self._visible(name) else " (hidden)") for i, name in enumerate(self._order))
-        self.sub_title = f"{len(vifs)} interface(s) · {total:.1f} bits total · {keys}"
+        self.sub_title = f"{snap.get('mode', 'shape')} mode · {snap.get('tokens_per_s', 0)} tok/s · {len(vifs)} interface(s) · {total:.1f} bits total · {keys}"
         if self._show_raw:
             target = self._selected or next((n for n in self._order if self._visible(n)), None)
             v = vifs.get(target or "", {})

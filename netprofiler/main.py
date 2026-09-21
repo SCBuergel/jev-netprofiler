@@ -36,6 +36,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--self-iface", default="eth0", help="interface for --self (default eth0)")
     p.add_argument("--dump-questions", action="store_true", help="print the exact Jev questions (built from the catalog) as JSON and exit")
     p.add_argument("--include-own-traffic", action="store_true", help="with --self: do not exclude the profiler's own flows (to see the contamination)")
+    p.add_argument("--raw", action="store_true", help="raw-packet mode: send a headers-only tcpdump log (no payload, opaque addresses) instead of the reduced description")
+    p.add_argument("--raw-batch", type=float, default=5.0, help="raw mode: seconds per batch and per Jev call (default 5)")
+    p.add_argument("--raw-budget", type=int, default=12000, help="raw mode: token ceiling for the packet log per call (default 12000)")
+    p.add_argument("--raw-keep-ips", action="store_true", help="raw mode: send real remote addresses instead of opaque endpoint ids")
     p.add_argument("--no-heartbeat", action="store_true", help="do not send the per-second multicast packet that keeps nfstream expiring idle flows on quiet vifs")
     p.add_argument("--headless", action="store_true", help="no TUI; print one JSON line per vif per tick")
     p.add_argument("--show-shape", action="store_true", help="with --headless, include the rendered shape text")
@@ -60,6 +64,10 @@ def settings_from(args: argparse.Namespace) -> Settings:
     s.interfaces = args.interface
     s.local_nets = args.local_net
     s.heartbeat = not args.no_heartbeat
+    s.raw = args.raw
+    s.raw_batch_s = args.raw_batch
+    s.raw_budget_tokens = args.raw_budget
+    s.raw_keep_ips = args.raw_keep_ips
     s.self_capture = args.self_capture
     s.self_iface = args.self_iface
     s.include_own = args.include_own_traffic
@@ -91,6 +99,9 @@ async def run_headless(engine: Engine, show_shape: bool, quiet: bool = False) ->
         snap = engine.snapshot()["vifs"].get(session.vif, {})
         line = {k: v for k, v in snap.items() if k not in ("shape_text", "confidence_history", "intensity_history")}
         line["vif"] = session.vif
+        top = engine.snapshot()
+        line["tokens_per_s"] = top["tokens_per_s"]
+        line["tokens_in_total"] = top["tokens_in"]
         line["answered_this_tick"] = answer is not None
         line["new_events"] = [(e.kind, engine.display_name(e.activity), round(e.probability, 3)) for e in events]
         if show_shape:

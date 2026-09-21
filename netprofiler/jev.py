@@ -68,16 +68,21 @@ NOUL_QUESTIONS = {
 }
 
 
-def build_questions(catalog: list[Activity]) -> dict:
+def build_questions(catalog: list[Activity], raw: bool = False) -> dict:
+    if raw:
+        instructions = {
+            "question": "Which catalogued activity best explains this packet log?",
+            "focus": "Judge from timing, packet sizes, directions, how many flows and endpoints there are, how long they live, and whether bursts look human-paced or machine-paced. Ports are real; addresses are opaque ids.",
+            "continuity": "The previous batch's top answers are given in the state; keep the same answer when the traffic has not meaningfully changed, switch when it has.",
+        }
+    else:
+        instructions = {
+            "question": "Which catalogued activity best explains this traffic shape?",
+            "focus": "Judge from shape alone: concurrency, direction, burst structure, packet sizes, inter-arrival rhythm, idle gaps, endpoint novelty and transport mix.",
+            "continuity": "The previous window's top answers are given in the state; keep the same answer when the shape has not meaningfully changed, switch when it has.",
+        }
     return {
-        "activity": Choice(
-            instructions={
-                "question": "Which catalogued activity best explains this traffic shape?",
-                "focus": "Judge from shape alone: concurrency, direction, burst structure, packet sizes, inter-arrival rhythm, idle gaps, endpoint novelty and transport mix.",
-                "continuity": "The previous window's top answers are given in the state; keep the same answer when the shape has not meaningfully changed, switch when it has.",
-            },
-            criteria=criteria(catalog),
-        ),
+        "activity": Choice(instructions=instructions, criteria=criteria(catalog)),
         "intensity": Score(instructions="How intense is the traffic on this link?", criteria=INTENSITY_LEVELS),
         "interactivity": Score(instructions="How much does the traffic timing follow a person's actions?", criteria=INTERACTIVITY_LEVELS),
         **NOUL_QUESTIONS,
@@ -122,9 +127,10 @@ class PreviousTop:
 class JevClient:
     """Async wrapper enforcing at most one in-flight request per vif."""
 
-    def __init__(self, api_key: str, catalog: list[Activity], model: str = MODEL, timeout: float = 8.0) -> None:
+    def __init__(self, api_key: str, catalog: list[Activity], model: str = MODEL, timeout: float = 8.0, raw: bool = False) -> None:
         self._client = AsyncTypeSafeClient(api_key=api_key, model=model, timeout=timeout, retry=RetryPolicy(max_retries=1))
-        self._questions = build_questions(catalog)
+        self.raw = raw
+        self._questions = build_questions(catalog, raw=raw)
         self._catalog_by_key = {a.key: a for a in catalog}
         self._busy: set[str] = set()
         self.dropped: dict[str, int] = {}
@@ -137,6 +143,14 @@ class JevClient:
 
     def build_state(self, shape_text: str, previous: PreviousTop) -> dict:
         """Exactly what Jev receives as `state`; the questions are static."""
+        if getattr(self, "raw", False):
+            from .rawcap import RAW_LEGEND
+
+            return {
+                "legend": RAW_LEGEND,
+                "packet_log": shape_text,
+                "previous_batch_top_answers": previous.as_state(self._catalog_by_key) or "none yet",
+            }
         return {
             "traffic_shape": shape_text,
             "previous_window_top_answers": previous.as_state(self._catalog_by_key) or "none yet",
@@ -177,10 +191,11 @@ class FakeJevClient:
     """Offline stand-in for --dry-run: returns a flat-ish distribution so the
     UI and accounting can be exercised without network access."""
 
-    def __init__(self, catalog: list[Activity]) -> None:
+    def __init__(self, catalog: list[Activity], raw: bool = False) -> None:
         self._keys = [a.key for a in catalog]
         self._catalog_by_key = {a.key: a for a in catalog}
-        self._questions = build_questions(catalog)
+        self.raw = raw
+        self._questions = build_questions(catalog, raw=raw)
         self._busy: set[str] = set()
         self.dropped: dict[str, int] = {}
         self._i = 0
@@ -206,7 +221,7 @@ class FakeJevClient:
             top = self._keys[(self._i // 5) % n]
             probs = {k: 0.3 / n for k in self._keys}
             probs[top] += 0.7
-            shape_text = state.get("traffic_shape", "")
+            shape_text = state.get("traffic_shape") or state.get("packet_log") or ""
             quiet = "silent" in shape_text or "no packets" in shape_text
             return Answer(
                 probabilities=probs,

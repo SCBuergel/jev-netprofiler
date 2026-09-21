@@ -56,11 +56,16 @@ class Engine:
         self._stop = asyncio.Event()
         key = settings.resolved_api_key()
         if settings.dry_run:
-            self.client = FakeJevClient(self.catalog)
+            self.client = FakeJevClient(self.catalog, raw=settings.raw)
         elif not key:
             raise SystemExit("no API key: set TYPESAFE_API_KEY or pass --api-key (or use --dry-run)")
         else:
-            self.client = JevClient(key, self.catalog, model=settings.model)
+            self.client = JevClient(key, self.catalog, model=settings.model, raw=settings.raw)
+        self.raw: "RawCaptureManager | None" = None
+        self.tokens_in = 0  # cumulative input tokens reported by the API
+        self.calls = 0
+        self._t_start = time.time()
+        self._last_batch_end_ms: dict[str, int] = {}
 
     # -- wiring -----------------------------------------------------------
     def on_update(self, hook: UpdateHook) -> None:
@@ -84,6 +89,24 @@ class Engine:
 
     # -- lifecycle ---------------------------------------------------------
     def start_capture(self) -> None:
+        if self.settings.raw:
+            from .capture import OwnTraffic
+            from .rawcap import RawCaptureManager
+
+            own = None if self.settings.include_own else OwnTraffic()
+            if own:
+                own.start()
+            self.raw = RawCaptureManager(own)
+            self.raw.on_new_vif = self._on_new_vif
+            if self.settings.self_capture:
+                self.raw.add("self", self.settings.self_iface)
+            from .capture import discover_vifs
+
+            for iface in discover_vifs(self.settings.interfaces or None):
+                self.raw.add(iface, iface)
+            if not self.raw.captures:
+                log.info("raw mode: no interfaces to capture yet")
+            return
         if self.settings.pcap:
             self.capture.add_pcap(self.settings.pcap, self.settings.pcap_speed, loop=False)
             return
@@ -99,16 +122,23 @@ class Engine:
                 t0 = time.monotonic()
                 if self.settings.pcap and self.settings.headless and self._replay_drained():
                     break  # checked before the tick so the last call has had a tick to land
-                if not self.settings.pcap:
-                    self.capture.scan()
-                self.tick()
+                if self.settings.raw:
+                    self._raw_rescan()
+                    self.tick_raw()
+                else:
+                    if not self.settings.pcap:
+                        self.capture.scan()
+                    self.tick()
                 self._write_state()
                 elapsed = time.monotonic() - t0
+                period = self.settings.raw_batch_s if self.settings.raw else TICK_SECONDS
                 try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=max(0.05, TICK_SECONDS - elapsed))
+                    await asyncio.wait_for(self._stop.wait(), timeout=max(0.05, period - elapsed))
                 except asyncio.TimeoutError:
                     pass
         finally:
+            if self.raw:
+                self.raw.stop_all()
             self.capture.stop_all()
             for s in self.sessions.values():
                 if s.task and not s.task.done():
@@ -126,6 +156,44 @@ class Engine:
             if self.capture.windows[vif].snapshot().segs:
                 return False
         return all(not (s.task and not s.task.done()) for s in self.sessions.values())
+
+    # -- raw-packet mode ------------------------------------------------------
+    def _raw_rescan(self) -> None:
+        from .capture import discover_vifs
+
+        assert self.raw is not None
+        for iface in discover_vifs(self.settings.interfaces or None):
+            if iface not in self.raw.captures:
+                self.raw.add(iface, iface)
+
+    def tick_raw(self) -> None:
+        """Encode the last batch period of packets per interface and ask Jev."""
+        from .flows import now_ms
+        from .rawcap import encode
+
+        assert self.raw is not None
+        end_ms = now_ms() - 300  # let tcpdump's line buffer drain
+        for name, s in list(self.sessions.items()):
+            cap = self.raw.captures.get(name)
+            if cap is None:
+                continue
+            s.ticks += 1
+            start_ms = self._last_batch_end_ms.get(name, end_ms - int(self.settings.raw_batch_s * 1000))
+            self._last_batch_end_ms[name] = end_ms
+            packets = cap.batch(start_ms, end_ms)
+            text, stats = encode(packets, start_ms, self.settings.raw_budget_tokens, keep_ips=self.settings.raw_keep_ips)
+            s.shape_text = text
+            s.excluded = f"own {cap.excluded_own} probes {stats['probes_dropped']} pkts {stats['packets']} lvl {stats['level']}"
+            if cap.error and not cap.alive:
+                s.status = f"capture error: {cap.error}"[:60]
+            if self.client.is_busy(name):
+                s.analysis.note_dropped()
+                s.status = "dropped batch (call in flight)"
+                self._emit(s, None, [])
+                continue
+            s.status = "asking"
+            s.jev_state = self.client.build_state(text, s.previous)
+            s.task = asyncio.get_event_loop().create_task(self._ask(s, s.jev_state))
 
     # -- one tick ----------------------------------------------------------
     def tick(self) -> None:
@@ -187,6 +255,9 @@ class Engine:
             s.analysis.note_dropped()
             self._emit(s, None, [])
             return
+        if answer.input_tokens:
+            self.tokens_in += answer.input_tokens
+        self.calls += 1
         events = s.analysis.ingest(answer, NOUL_EVENT_THRESHOLD)
         s.previous = PreviousTop(sorted(answer.probabilities.items(), key=lambda kv: kv[1], reverse=True)[:3])
         s.status = "ok"
@@ -202,7 +273,16 @@ class Engine:
 
     # -- snapshots ---------------------------------------------------------
     def snapshot(self) -> dict:
-        out = {"t": time.time(), "catalog_size": len(self.catalog), "vifs": {}}
+        elapsed = max(1.0, time.time() - self._t_start)
+        out = {
+            "t": time.time(),
+            "catalog_size": len(self.catalog),
+            "mode": "raw" if self.settings.raw else "shape",
+            "tokens_in": self.tokens_in,
+            "calls": self.calls,
+            "tokens_per_s": round(self.tokens_in / elapsed, 1),
+            "vifs": {},
+        }
         for vif, s in self.sessions.items():
             a = s.analysis
             la = a.last_answer
@@ -229,6 +309,7 @@ class Engine:
                 "intensity_history": list(a.intensity_history),
                 "events": [(e.tick, e.kind, self.display_name(e.activity), round(e.probability, 3)) for e in list(a.events)[-30:]],
                 "latency_s": la.latency_s if la else None,
+                "input_tokens": la.input_tokens if la else None,
                 "shape_text": s.shape_text,
                 "jev_state": s.jev_state,
             }
