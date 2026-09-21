@@ -1,4 +1,4 @@
-# Activity catalog (question set v3). Each entry is one option of the Jev Choice question:
+# Question set v3: v2 plus wallet/chat/ssh rewritten from observed reducer output.
 activities:
   - name: idle
     shape: Silent or nearly silent link; at most a few tiny keepalive packets with long idle gaps and no bursts.

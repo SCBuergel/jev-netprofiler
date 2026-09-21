@@ -68,19 +68,25 @@ NOUL_QUESTIONS = {
 }
 
 
+ACTIVITY_INSTRUCTIONS = {
+    "question": "Which catalogued activity best explains the traffic in the state?",
+    "input": (
+        "The state is either a prose description of traffic shape in level words, or a headers-only packet log "
+        "with a summary line, a flow table and per-packet lines. Read whichever form is present."
+    ),
+    "focus": "Judge from shape: how many flows and endpoints, how long they live, direction, burst structure, packet sizes, inter-arrival rhythm, idle gaps.",
+    "tie_breaks": [
+        "Many flows to many endpoints active at once with bytes spread across them is torrent, even when the volume is high; a single dominant flow is a download or upload.",
+        "A burst of many new short-lived flows to several endpoints followed by seconds of quiet is web browsing, even when the burst moves a lot of data; a few flows fetching file after file without pauses is software updates.",
+        "One or a few long-lived flows of tiny packets with a keystroke-like uneven cadence is ssh. A single flow that wakes every few seconds for a short rapid exchange of medium-sized packets and is otherwise sporadic is wallet polling rpc. A single flow that is almost silent, with at most one tiny burst per window and machine-like regular keepalives, is chat, not idle: idle has no flow at all.",
+    ],
+    "continuity": "Previous top answers may be given; keep the same answer when the traffic has not meaningfully changed, switch when it has.",
+}
+
+
 def build_questions(catalog: list[Activity], raw: bool = False) -> dict:
-    if raw:
-        instructions = {
-            "question": "Which catalogued activity best explains this packet log?",
-            "focus": "Judge from timing, packet sizes, directions, how many flows and endpoints there are, how long they live, and whether bursts look human-paced or machine-paced. Ports are real; addresses are opaque ids.",
-            "continuity": "The previous batch's top answers are given in the state; keep the same answer when the traffic has not meaningfully changed, switch when it has.",
-        }
-    else:
-        instructions = {
-            "question": "Which catalogued activity best explains this traffic shape?",
-            "focus": "Judge from shape alone: concurrency, direction, burst structure, packet sizes, inter-arrival rhythm, idle gaps, endpoint novelty and transport mix.",
-            "continuity": "The previous window's top answers are given in the state; keep the same answer when the shape has not meaningfully changed, switch when it has.",
-        }
+    """The same questions for every mode (question set v3, see tools/questions)."""
+    instructions = ACTIVITY_INSTRUCTIONS
     return {
         "activity": Choice(instructions=instructions, criteria=criteria(catalog)),
         "intensity": Score(instructions="How intense is the traffic on this link?", criteria=INTENSITY_LEVELS),
