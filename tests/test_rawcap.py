@@ -61,3 +61,12 @@ def test_encoding_ladder_respects_budget():
     rle, s1 = encode(pk, 0, budget_tokens=12000)
     assert s1["level"] in (1, 2) and ("x" in rle or "p " in rle)
     assert "f2" in rle  # the small chat flow survives compression
+
+
+def test_raw_ips_mode_is_opt_in():
+    line = "1758412345.123456 IP 10.137.0.10.51000 > 203.0.113.5.443: tcp 517"
+    assert parse_line(line, LOCAL).label is None
+    p = parse_line(line, LOCAL, keep_ips=True)
+    assert p.label == "10.137.0.10:51000 > 203.0.113.5:443"
+    text, _ = encode([p, parse_line("1758412345.2 IP 203.0.113.5.443 > 10.137.0.10.51000: tcp 1448", LOCAL, keep_ips=True)], 1758412345123, 5000)
+    assert "f1 tcp 10.137.0.10:51000 > 203.0.113.5:443 acks=0" in text

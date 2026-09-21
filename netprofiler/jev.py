@@ -127,9 +127,10 @@ class PreviousTop:
 class JevClient:
     """Async wrapper enforcing at most one in-flight request per vif."""
 
-    def __init__(self, api_key: str, catalog: list[Activity], model: str = MODEL, timeout: float = 8.0, raw: bool = False) -> None:
+    def __init__(self, api_key: str, catalog: list[Activity], model: str = MODEL, timeout: float = 8.0, raw: bool = False, raw_ips: bool = False) -> None:
         self._client = AsyncTypeSafeClient(api_key=api_key, model=model, timeout=timeout, retry=RetryPolicy(max_retries=1))
         self.raw = raw
+        self.raw_ips = raw_ips
         self._questions = build_questions(catalog, raw=raw)
         self._catalog_by_key = {a.key: a for a in catalog}
         self._busy: set[str] = set()
@@ -144,10 +145,10 @@ class JevClient:
     def build_state(self, shape_text: str, previous: PreviousTop) -> dict:
         """Exactly what Jev receives as `state`; the questions are static."""
         if getattr(self, "raw", False):
-            from .rawcap import RAW_LEGEND
+            from .rawcap import RAW_LEGEND, RAW_LEGEND_IPS
 
             return {
-                "legend": RAW_LEGEND,
+                "legend": RAW_LEGEND_IPS if getattr(self, "raw_ips", False) else RAW_LEGEND,
                 "packet_log": shape_text,
                 "previous_batch_top_answers": previous.as_state(self._catalog_by_key) or "none yet",
             }
@@ -191,10 +192,11 @@ class FakeJevClient:
     """Offline stand-in for --dry-run: returns a flat-ish distribution so the
     UI and accounting can be exercised without network access."""
 
-    def __init__(self, catalog: list[Activity], raw: bool = False) -> None:
+    def __init__(self, catalog: list[Activity], raw: bool = False, raw_ips: bool = False) -> None:
         self._keys = [a.key for a in catalog]
         self._catalog_by_key = {a.key: a for a in catalog}
         self.raw = raw
+        self.raw_ips = raw_ips
         self._questions = build_questions(catalog, raw=raw)
         self._busy: set[str] = set()
         self.dropped: dict[str, int] = {}

@@ -56,11 +56,11 @@ class Engine:
         self._stop = asyncio.Event()
         key = settings.resolved_api_key()
         if settings.dry_run:
-            self.client = FakeJevClient(self.catalog, raw=settings.raw)
+            self.client = FakeJevClient(self.catalog, raw=settings.raw, raw_ips=settings.raw_ips)
         elif not key:
             raise SystemExit("no API key: set TYPESAFE_API_KEY or pass --api-key (or use --dry-run)")
         else:
-            self.client = JevClient(key, self.catalog, model=settings.model, raw=settings.raw)
+            self.client = JevClient(key, self.catalog, model=settings.model, raw=settings.raw, raw_ips=settings.raw_ips)
         self.raw: "RawCaptureManager | None" = None
         self.tokens_in = 0  # cumulative input tokens reported by the API
         self.calls = 0
@@ -96,7 +96,7 @@ class Engine:
             own = None if self.settings.include_own else OwnTraffic()
             if own:
                 own.start()
-            self.raw = RawCaptureManager(own)
+            self.raw = RawCaptureManager(own, keep_ips=self.settings.raw_ips)
             self.raw.on_new_vif = self._on_new_vif
             if self.settings.self_capture:
                 self.raw.add("self", self.settings.self_iface)

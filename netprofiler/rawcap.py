@@ -48,13 +48,14 @@ class Packet:
     flow: str  # salted digest of (proto, local port, remote ip, remote port)
     endpoint: str  # salted digest of (proto, remote ip, remote port)
     length: int  # payload-ish length as tcpdump reports it (tcp: payload bytes; udp: length)
+    label: str | None = None  # "local:port > remote:port", only in the opt-in --raw-ips mode
 
     @property
     def tuple4(self) -> str:
         return self.flow
 
 
-def parse_line(line: str, local_ips: set[str]) -> Packet | None:
+def parse_line(line: str, local_ips: set[str], keep_ips: bool = False) -> Packet | None:
     m = _LINE.match(line)
     if not m:
         return None
@@ -67,16 +68,18 @@ def parse_line(line: str, local_ips: set[str]) -> Packet | None:
         return None  # not ours (multicast chatter, other hosts on the segment)
     proto = 6 if m.group("tcp") else 17
     length = int(m.group("tlen") or m.group("ulen") or 0)
-    # addresses and ports stop here
-    return Packet(int(float(m.group("ts")) * 1000), out, proto, flow_id(proto, lport, rip, rport), endpoint_id(proto, rip, rport), length)
+    label = f"{'?' if not keep_ips else (src if out else dst)}:{lport} > {rip}:{rport}" if keep_ips else None
+    # addresses and ports stop here unless --raw-ips asked for them
+    return Packet(int(float(m.group("ts")) * 1000), out, proto, flow_id(proto, lport, rip, rport), endpoint_id(proto, rip, rport), length, label)
 
 
 class TcpdumpCapture:
     """One tcpdump per interface, lines parsed in a thread into a buffer."""
 
-    def __init__(self, iface: str, local_ips: set[str], own: OwnTraffic | None, keep_seconds: float = 30.0) -> None:
+    def __init__(self, iface: str, local_ips: set[str], own: OwnTraffic | None, keep_seconds: float = 30.0, keep_ips: bool = False) -> None:
         self.iface = iface
         self.local_ips = local_ips
+        self.keep_ips = keep_ips
         self.own = own
         self.keep_ms = int(keep_seconds * 1000)
         self.error: str | None = None
@@ -106,7 +109,7 @@ class TcpdumpCapture:
             for line in self._proc.stdout:
                 if self._stop.is_set():
                     break
-                p = parse_line(line, self.local_ips)
+                p = parse_line(line, self.local_ips, self.keep_ips)
                 if p is None:
                     continue
                 if self.own is not None and self.own.is_own(p):  # type: ignore[arg-type]
@@ -175,14 +178,16 @@ def encode(packets: list[Packet], start_ms: int, budget_tokens: int) -> tuple[st
     bytes_out = sum(p.length for p in data if p.out)
     span_ms = packets[-1].t_ms - packets[0].t_ms
     gaps = sum(1 for a, b in zip(packets, packets[1:]) if b.t_ms - a.t_ms >= 1000)
+    with_ips = packets[0].label is not None
     header = [
         f"summary: {len(flows)} flows to {len(endpoints)} endpoints, {len(packets)} packets over {span_ms} ms, "
         f"{bytes_in} B in, {bytes_out} B out, {gaps} pauses of a second or more",
-        "flows (id proto endpoint, pure-ack count):",
+        "flows (id proto local:port > remote:port, pure-ack count):" if with_ips else "flows (id proto endpoint, pure-ack count):",
     ]
     for key, fid in flows.items():
         p0 = next(p for p in packets if p.flow == key)
-        header.append(f"f{fid} {'tcp' if protos[key] == 6 else 'udp'} e{endpoints[p0.endpoint]} acks={acks.get(key, 0)}")
+        where = p0.label if with_ips else f"e{endpoints[p0.endpoint]}"
+        header.append(f"f{fid} {'tcp' if protos[key] == 6 else 'udp'} {where} acks={acks.get(key, 0)}")
     head = "\n".join(header) + "\npackets (+ms since previous line, flow, dir > out < in, len):\n"
     stats["flows"] = len(flows)
     stats["endpoints"] = len(endpoints)
@@ -252,17 +257,27 @@ RAW_LEGEND = (
 )
 
 
+RAW_LEGEND_IPS = (
+    "A headers-only packet log of one network link over the last few seconds. No payload. The flow table gives the real "
+    "local and remote addresses and ports of each flow. Pure TCP acks are not listed, only counted per flow. "
+    "Each packet line is the delay in ms since the previous line, the flow id with direction (> sent by this machine, "
+    "< received), and the payload length in bytes; 'x N over M ms' means N identical packets back to back; binned lines "
+    "give packet count and bytes per time bin. Judge the activity from timing, sizes, directions, flow structure and endpoints."
+)
+
+
 class RawCaptureManager:
     """tcpdump captures per interface, sharing the own-traffic filter."""
 
-    def __init__(self, own: OwnTraffic | None) -> None:
+    def __init__(self, own: OwnTraffic | None, keep_ips: bool = False) -> None:
         self.own = own
+        self.keep_ips = keep_ips
         self.captures: dict[str, TcpdumpCapture] = {}
         self.on_new_vif = None
 
     def add(self, name: str, iface: str) -> None:
         local_ips = {a.split("/")[0] for a in SelfCapture.local_addresses(iface)}
-        cap = TcpdumpCapture(iface, local_ips, self.own)
+        cap = TcpdumpCapture(iface, local_ips, self.own, keep_ips=self.keep_ips)
         self.captures[name] = cap
         cap.start()
         log.info("raw capture on %s (local %s)", iface, ", ".join(sorted(local_ips)) or "?")
