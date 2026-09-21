@@ -24,7 +24,7 @@ activities:
     shape: Sporadic tiny bursts of small packets to one or two long-lived endpoints at irregular human intervals with long idle gaps between them; very low volume.
 
   - name: wallet polling rpc
-    shape: Tiny request/response bursts to a single endpoint every few seconds at a machine-like regular interval, long idle gaps between them, very low volume, no human rhythm.
+    shape: A single flow to a single endpoint carrying one tiny request/response burst every few seconds at a clock-like regular interval, idle in between, very low volume, no human rhythm, never any large upload or sustained stream.
 
   - name: torrent
     shape: A very large number of concurrent flows to many new endpoints, mixed TCP and UDP, roughly balanced bytes, mixed packet sizes, continuously active, steady connection churn.
@@ -36,4 +36,4 @@ activities:
     shape: One dominant long-lived flow, almost entirely download, MTU-sized packets back-to-back, continuously active at very high volume, no human rhythm.
 
   - name: claude code
-    shape: Moderate number of long-lived flows to one or two endpoints, most of them quiet apart from tiny clock-like keepalive packets, roughly balanced and low volume; on top of that, per turn, a brief upload-dominated burst of large packets followed by a download-leaning stream of small packets at an irregular rapid rate for several seconds, then a pause of several seconds.
+    shape: Several to many long-lived flows to one or two endpoints; per turn a brief upload-dominated burst of large packets followed by a download-leaning stream of small packets at an irregular rapid rate lasting several seconds, then a pause of several seconds; between turns only tiny keepalives on many flows.
