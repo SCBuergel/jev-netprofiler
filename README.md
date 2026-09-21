@@ -79,6 +79,7 @@ sudo -E .venv/bin/netprofiler --self             # plus this qube's own apps
 
 `--include-own-traffic` keeps the profiler's own Jev calls in the self pane
 (they read as `wallet polling rpc`, which is the point of excluding them).
+`--self-iface` picks the interface for self mode (default `eth0`).
 `--local-net CIDR` sets which side of a flow is the downstream qube when the
 SYN direction and private/public split cannot tell. `--no-heartbeat` stops
 the one-packet-per-second multicast keepalive that lets nfstream expire idle
@@ -89,9 +90,11 @@ flows on a silent vif.
 Every 2 s per interface: nfstream flow segments from the last 10 s are
 reduced to statistics (flows, endpoints, direction, bursts and gaps, packet
 sizes, spacing, transport, trend), each mapped to a word, rendered into
-about 700 tokens of prose with a guard against digits. One Jev call fans out
-a Choice over the catalog, Scores for intensity and interactivity, and four
-Nouls. One call in flight per interface; a tick arriving while one is
+about 700 tokens of prose with a guard against digits. Burst start times are also kept for a
+minute per interface so the text can say whether bursts come at a regular
+or a human-looking rhythm over a longer horizon than one window. One Jev
+call fans out a Choice over the catalog, Scores for intensity and
+interactivity, and four Nouls. One call in flight per interface; a tick arriving while one is
 outstanding is dropped. Shannon entropy of the Choice distribution gives
 bits = log2(N) - H; bits accumulate once per activity episode (episodes
 follow the 4-tick smoothed top answer); anonymity set = population / 2^bits.
@@ -101,6 +104,23 @@ follow the 4-tick smoothed top answer); anonymity set = population / 2^bits.
 `tools/fake_qube.py` plays a downstream qube on a veth pair (`vif99.0` on
 the host, `qube0` in a network namespace) with scripted scenarios; the
 docstring has the setup and teardown commands.
+
+## What it gets right, and not
+
+Tested on a public Ubuntu server in self mode with real traffic: web
+browsing 0.9, large file download 0.99, large file upload 0.99, ssh with
+`someone_is_typing` 0.8, wallet polling an RPC 0.9 (once a minute of rhythm
+has built up), torrent 0.98 at first and then alternating with large file
+download as the client settles on one fast peer, software updates recognised
+at the start and then read as a large download once the sustained fetch
+dominates. Chat (IRC, a line every few seconds) is the weak spot: one tiny
+burst every few seconds on one flow looks the same as a polling wallet at
+this granularity, and it mostly reads as `wallet polling rpc`. Claude Code
+is in the catalog but was not tested on the server.
+
+Unsolicited inbound noise on a public address (port scans answered with a
+reset, unanswered UDP, pings) is filtered before the window; a Qubes qube
+behind NAT never sees it.
 
 ## Limits
 
