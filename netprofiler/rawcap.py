@@ -123,9 +123,11 @@ class TcpdumpCapture:
 
     def _run(self) -> None:
         self.alive = True
-        cmd = ["tcpdump", "-i", self.iface, "-nn", "-tt", "-q", "-l", "-s", "96", "-U", "ip or ip6"]
+        # -Z root: Debian's tcpdump otherwise switches to the `tcpdump` user after
+        # opening the device, which fails under a service without CAP_SETUID
+        cmd = ["tcpdump", "-i", self.iface, "-nn", "-tt", "-q", "-l", "-s", "96", "-U", "-Z", "root", "ip or ip6"]
         try:
-            self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+            self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
             assert self._proc.stdout is not None
             for line in self._proc.stdout:
                 if self._stop.is_set():
@@ -143,8 +145,15 @@ class TcpdumpCapture:
                     cutoff = p.t_ms - self.keep_ms
                     while self._buf and self._buf[0].t_ms < cutoff:
                         self._buf.popleft()
+            # stdout closed: tcpdump exited. Unless we asked it to, that is an error.
+            rc = self._proc.wait(timeout=5)
+            stderr = (self._proc.stderr.read() if self._proc.stderr else "").strip()
+            if not self._stop.is_set():
+                tail = [l for l in stderr.splitlines() if l and "listening on" not in l and "packets captured" not in l and "received by filter" not in l and "dropped by kernel" not in l]
+                self.error = f"tcpdump exited with status {rc}" + (f": {tail[-1]}" if tail else "")
+                log.warning("tcpdump on %s: %s", self.iface, self.error)
         except Exception as e:
-            self.error = str(e)
+            self.error = f"tcpdump failed: {e}"
             log.warning("tcpdump on %s stopped: %s", self.iface, e)
         finally:
             self.alive = False

@@ -190,7 +190,9 @@ class Engine:
             s.shape_text = text
             s.excluded = f"own {cap.excluded_own} probes {stats['probes_dropped']} pkts {stats['packets']} lvl {stats['level']} lines {cap.total_lines} skipped {cap.skipped_lines}"
             if cap.error and not cap.alive:
-                s.status = f"capture error: {cap.error}"[:60]
+                s.status = "capture error"
+                if s.last_error != cap.error:
+                    s.last_error, s.last_error_at, s.errors = cap.error, time.time(), s.errors + 1
             if self.client.is_busy(name):
                 s.analysis.note_dropped()
                 s.status = "dropped batch (call in flight)"
