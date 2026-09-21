@@ -105,7 +105,7 @@ class Engine:
             from .capture import discover_vifs
 
             for iface in discover_vifs(self.settings.interfaces or None):
-                self.raw.add(iface, iface)
+                self.raw.add(iface, iface, self.settings.local_nets)
             if not self.raw.captures:
                 log.info("raw mode: no interfaces to capture yet")
             return
@@ -166,7 +166,7 @@ class Engine:
         assert self.raw is not None
         for iface in discover_vifs(self.settings.interfaces or None):
             if iface not in self.raw.captures:
-                self.raw.add(iface, iface)
+                self.raw.add(iface, iface, self.settings.local_nets)
 
     def tick_raw(self) -> None:
         """Encode the last batch period of packets per interface and ask Jev."""
@@ -188,7 +188,7 @@ class Engine:
             packets = cap.batch(start_ms, end_ms)
             text, stats = encode(packets, start_ms, self.settings.raw_budget_tokens)
             s.shape_text = text
-            s.excluded = f"own {cap.excluded_own} probes {stats['probes_dropped']} pkts {stats['packets']} lvl {stats['level']}"
+            s.excluded = f"own {cap.excluded_own} probes {stats['probes_dropped']} pkts {stats['packets']} lvl {stats['level']} lines {cap.total_lines} skipped {cap.skipped_lines}"
             if cap.error and not cap.alive:
                 s.status = f"capture error: {cap.error}"[:60]
             if self.client.is_busy(name):

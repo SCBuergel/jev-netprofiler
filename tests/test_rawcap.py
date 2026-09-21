@@ -83,3 +83,18 @@ def test_mode_defaults():
     s = Settings()
     assert s.mode == "raw" and s.raw and not s.raw_ips and s.raw_batch_s == 2.0 and s.raw_window_s == 10.0
     assert Settings(mode="raw-ips").raw_ips and not Settings(mode="shape").raw
+
+
+def test_vif_lines_are_oriented_without_the_interface_address():
+    # on a vif the packets are between the downstream qube and the internet;
+    # the vif's own address never appears
+    out = parse_line("1758412345.1 IP 10.137.0.23.51000 > 93.184.216.34.443: tcp 517", set())
+    inn = parse_line("1758412345.2 IP 93.184.216.34.443 > 10.137.0.23.51000: tcp 1448", set())
+    assert out and out.out and inn and not inn.out and out.flow == inn.flow
+    # with the downstream address known, it wins even for a private peer
+    p = parse_line("1758412345.3 IP 10.137.0.23.51001 > 10.139.1.1.53: UDP, length 40", {"10.137.0.23"})
+    assert p and p.out
+    assert parse_line("1758412345.4 IP 10.139.1.1.53 > 10.137.0.23.51001: UDP, length 90", {"10.137.0.23"}).out is False
+    from netprofiler.rawcap import routed_hosts
+
+    assert routed_hosts([{"dst": "10.137.0.23", "dev": "vif12.0", "scope": "link"}, {"dst": "default", "gateway": "10.138.25.42"}]) == {"10.137.0.23"}

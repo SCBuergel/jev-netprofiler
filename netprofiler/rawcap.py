@@ -16,6 +16,8 @@ Size ladder, applied until the text fits the budget:
 
 from __future__ import annotations
 
+import ipaddress
+import json
 import logging
 import re
 import shutil
@@ -56,7 +58,19 @@ class Packet:
         return self.flow
 
 
+def _is_private(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip).is_private
+    except ValueError:
+        return False
+
+
 def parse_line(line: str, local_ips: set[str], keep_ips: bool = False) -> Packet | None:
+    """One tcpdump line -> Packet, or None for lines that are not this
+    link's traffic. `local_ips` is the side being profiled (the interface's
+    own address on eth0, the downstream qube on a vif); when neither address
+    matches, a private-to-public packet counts as outbound and the reverse
+    as inbound."""
     m = _LINE.match(line)
     if not m:
         return None
@@ -65,8 +79,12 @@ def parse_line(line: str, local_ips: set[str], keep_ips: bool = False) -> Packet
         out, lport, rip, rport = True, int(m.group("sport")), dst, int(m.group("dport"))
     elif dst in local_ips:
         out, lport, rip, rport = False, int(m.group("dport")), src, int(m.group("sport"))
+    elif _is_private(src) and not _is_private(dst):
+        out, lport, rip, rport = True, int(m.group("sport")), dst, int(m.group("dport"))
+    elif _is_private(dst) and not _is_private(src):
+        out, lport, rip, rport = False, int(m.group("dport")), src, int(m.group("sport"))
     else:
-        return None  # not ours (multicast chatter, other hosts on the segment)
+        return None  # multicast chatter, link-local, other hosts on the segment
     proto = 6 if m.group("tcp") else 17
     length = int(m.group("tlen") or m.group("ulen") or 0)
     label = f"{'?' if not keep_ips else (src if out else dst)}:{lport} > {rip}:{rport}" if keep_ips else None
@@ -87,6 +105,8 @@ class TcpdumpCapture:
         self.alive = False
         self.excluded_own = 0
         self.dropped_probes = 0
+        self.skipped_lines = 0  # lines that were not this link's traffic
+        self.total_lines = 0
         self._buf: deque[Packet] = deque()
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
@@ -110,8 +130,10 @@ class TcpdumpCapture:
             for line in self._proc.stdout:
                 if self._stop.is_set():
                     break
+                self.total_lines += 1
                 p = parse_line(line, self.local_ips, self.keep_ips)
                 if p is None:
+                    self.skipped_lines += 1
                     continue
                 if self.own is not None and self.own.is_own(p):  # type: ignore[arg-type]
                     self.excluded_own += 1
@@ -283,6 +305,27 @@ RAW_LEGEND_IPS = (
 )
 
 
+def downstream_addresses(iface: str) -> set[str]:
+    """Addresses routed through `iface`: on a Qubes net-qube the host route
+    to the downstream qube (`10.137.0.23 dev vif12.0`). Empty if none."""
+    try:
+        out = subprocess.run(["ip", "-j", "route", "show", "dev", iface], capture_output=True, text=True, timeout=5).stdout
+        return routed_hosts(json.loads(out or "[]"))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return set()
+
+
+def routed_hosts(routes: list[dict]) -> set[str]:
+    hosts = set()
+    for r in routes:
+        dst = str(r.get("dst", ""))
+        if dst and dst != "default" and "/" not in dst:
+            hosts.add(dst)
+        elif dst.endswith("/32") or dst.endswith("/128"):
+            hosts.add(dst.split("/")[0])
+    return hosts
+
+
 class RawCaptureManager:
     """tcpdump captures per interface, sharing the own-traffic filter."""
 
@@ -292,10 +335,16 @@ class RawCaptureManager:
         self.captures: dict[str, TcpdumpCapture] = {}
         self.on_new_vif = None
 
-    def add(self, name: str, iface: str) -> None:
+    def add(self, name: str, iface: str, local_nets: list[str] | None = None) -> None:
         if shutil.which("tcpdump") is None:
             raise SystemExit("tcpdump not found: install it (apt install tcpdump) or use --mode shape")
-        local_ips = {a.split("/")[0] for a in SelfCapture.local_addresses(iface)}
+        if name == "self":
+            local_ips = {a.split("/")[0] for a in SelfCapture.local_addresses(iface)}
+        else:  # a vif: the profiled side is the downstream qube, not this host
+            local_ips = downstream_addresses(iface)
+        for net in local_nets or []:
+            if "/" not in net or net.endswith(("/32", "/128")):
+                local_ips.add(net.split("/")[0])
         cap = TcpdumpCapture(iface, local_ips, self.own, keep_ips=self.keep_ips)
         self.captures[name] = cap
         cap.start()
