@@ -107,35 +107,81 @@ follow the 4-tick smoothed top answer); anonymity set = population / 2^bits.
 `tcpdump -nn -tt -q -l -s 96` records headers only (payload is never
 captured), one line per packet; every `--raw-batch` seconds (default 5) the
 last `--raw-window` seconds (default: the batch) are encoded and sent as the
-state. Columns kept: time (as the delay
-since the previous line), flow id, direction, payload length; a flow table
-gives protocol and an opaque endpoint id. No address or port is stored or
-sent. Pure TCP acks are counted per flow rather than listed,
-and one computed summary line gives flow, endpoint, packet, byte and pause
-counts. The text is kept under `--raw-budget` tokens (default 12000) by a
-ladder: verbatim lines, then run-length encoding of identical packets, then
-100 ms and 500 ms per-flow bins, then truncation.
+state. Columns kept: time (as the delay since the previous line), flow id,
+direction, payload length; a flow table gives protocol and an opaque
+endpoint id, and a summary line gives flow, endpoint, packet, byte and pause
+counts plus how many flows opened during the window and lived under 2 s.
+Pure TCP acks are counted per flow rather than listed. The text is kept
+under `--raw-budget` tokens (default 12000) by a ladder: verbatim lines,
+then run-length encoding of identical packets, then 100 ms and 500 ms
+per-flow bins, then truncation. Jev tokenizes these digit-heavy lines at
+about one token per character, so a verbatim line costs ~11 tokens.
 
-Jev tokenizes these digit-heavy lines at about one token per character, so
-a verbatim line costs ~11 tokens. Measured on the same server and
-scenarios, shape mode costs ~1,970 tokens per call every 2 s (about 1,000
-tok/s); raw mode averaged 500 tok/s with 5 s batches and 390 tok/s with 10 s
-batches (idle batches cost ~1,700 tokens, bulk transfers collapse to bins
-at ~3,000), peaking at 10,600 (5 s) and 16,800 (10 s) tokens in one call.
-So it is cheaper, not more expensive.
+`--raw-ips` is a third, opt-in mode that keeps the real local and remote
+addresses and ports in the flow table. In the other two modes addresses and
+ports are hashed with a per-process salt while a record is parsed and never
+stored.
 
-Accuracy is where it loses. On the same scenarios, bulk transfers are
-recognised as well as in shape mode (large file download 0.98, large file
-upload 0.98), but everything low-volume and interactive gets worse: web
-browsing reads as `claude code`, wallet polling as `unknown` or `claude
-code`, ssh typing as `unknown`, `chat` or `claude code`, where shape mode
-scored 0.8 to 0.9 on each. Longer batches did not help (10 s made browsing,
-wallet and ssh all read as `claude code`). Jev appears to key on gross
-features of the raw log (several flows, small packets, pauses) and does not
-recover rhythm, keystroke cadence or burst structure from hundreds of
-numeric lines the way the reducer's level words state them outright. The
-reduced description remains the better input; the raw path is kept on this
-branch as an experiment.
+## Question tuning
+
+In TypeSafe terms the "prompt" is the question set: the Choice question's
+`instructions`, each catalog option's `criteria` (the `shape` entries in
+`activities.yaml`), and the Score levels and Noul criteria. The state
+framing (the raw legend and summary line) is the other lever. All modes use
+the same questions.
+
+`tools/eval_questions.py` re-asks Jev on recorded, labelled states (a
+`--show-shape` run plus its scenario log), with the previous-answer field
+reset, so question variants are compared on identical inputs.
+`tools/questions/` holds the variants:
+
+- v0: the original one-line shape descriptions.
+- v1: a rigid decision procedure plus structured criteria with cues for
+  both input forms. Helped torrent, broke wallet: it tied wallet-vs-chat to
+  a rhythm word the reducer gets wrong as often as right.
+- v2: v0 wording, a note that the state may be prose or a packet log, three
+  tie-break hints, and `not_for` contrasts on the bulk/torrent/browsing
+  group.
+- v3: v2 with wallet, chat and ssh rewritten from the reducer's *observed*
+  words. The original text had them inverted: a real wallet poll is a short
+  TLS exchange of medium packets every few seconds with an irregular
+  rhythm; an IRC client is nearly silent with clock-like keepalives.
+- v4 (shipped): v3 plus packet-log cues for browsing vs download (flows
+  that all open and end within two seconds vs one flow alive all window).
+
+Offline accuracy on the same recorded windows (top answer, non-idle
+scenarios; chat and ssh-typing counted as in the table below):
+
+| set | shape | raw (10 s window) | raw with addresses |
+|---|---|---|---|
+| v0 | 52 % | 54 % | 62 % |
+| v3 | 82 % | 66 % | 74 % |
+| v4 | 82 % | 71 % | 79 % |
+
+Per scenario with v4 (accuracy, mean probability on the right answer):
+
+| scenario | shape | raw | raw with addresses |
+|---|---|---|---|
+| web browsing | 100 %, 0.87 | 40 %, 0.28 | 60 %, 0.37 |
+| large file download | 100 %, 1.00 | 100 %, 1.00 | 100 %, 1.00 |
+| large file upload | 100 %, 0.98 | 100 %, 0.99 | 100 %, 0.99 |
+| wallet polling rpc | 100 %, 0.99 | 100 %, 0.87 | 83 %, 0.80 |
+| chat (IRC) | 50 %, 0.46 | 50 %, 0.24 | 38 %, 0.26 |
+| torrent | 75 %, 0.51 | 100 %, 0.77 | 100 %, 0.98 |
+| ssh typing | 75 %, 0.75 | 0 %, 0.13 | 80 %, 0.72 |
+
+What the remaining errors are: the chat misses are windows in which the
+IRC client sent nothing (the state says no flows); the torrent misses in
+shape mode are windows where one peer carried nearly all bytes; the raw
+ssh failure comes from the test itself, whose typing session runs without a
+tty so the server only ever receives keystrokes and sends bare acks, which
+a packet log reads as inbound data (the reducer's cadence word is
+direction-agnostic and survives it). Addresses help raw mode mostly on
+ssh and browsing; their cost is that every destination is sent to Jev.
+
+Cost per mode (one call every 2 s, measured live): shape ~1,000 tok/s;
+raw with a 10 s window ~2,100 tok/s; raw with addresses about the same
+plus the address text. The v4 questions add ~18 % to every call over v0.
 
 ## Local test rig
 
