@@ -181,7 +181,7 @@ class Engine:
             start_ms = self._last_batch_end_ms.get(name, end_ms - int(self.settings.raw_batch_s * 1000))
             self._last_batch_end_ms[name] = end_ms
             packets = cap.batch(start_ms, end_ms)
-            text, stats = encode(packets, start_ms, self.settings.raw_budget_tokens, keep_ips=self.settings.raw_keep_ips)
+            text, stats = encode(packets, start_ms, self.settings.raw_budget_tokens)
             s.shape_text = text
             s.excluded = f"own {cap.excluded_own} probes {stats['probes_dropped']} pkts {stats['packets']} lvl {stats['level']}"
             if cap.error and not cap.alive:

@@ -39,7 +39,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--raw", action="store_true", help="raw-packet mode: send a headers-only tcpdump log (no payload, opaque addresses) instead of the reduced description")
     p.add_argument("--raw-batch", type=float, default=5.0, help="raw mode: seconds per batch and per Jev call (default 5)")
     p.add_argument("--raw-budget", type=int, default=12000, help="raw mode: token ceiling for the packet log per call (default 12000)")
-    p.add_argument("--raw-keep-ips", action="store_true", help="raw mode: send real remote addresses instead of opaque endpoint ids")
     p.add_argument("--no-heartbeat", action="store_true", help="do not send the per-second multicast packet that keeps nfstream expiring idle flows on quiet vifs")
     p.add_argument("--headless", action="store_true", help="no TUI; print one JSON line per vif per tick")
     p.add_argument("--show-shape", action="store_true", help="with --headless, include the rendered shape text")
@@ -67,7 +66,6 @@ def settings_from(args: argparse.Namespace) -> Settings:
     s.raw = args.raw
     s.raw_batch_s = args.raw_batch
     s.raw_budget_tokens = args.raw_budget
-    s.raw_keep_ips = args.raw_keep_ips
     s.self_capture = args.self_capture
     s.self_iface = args.self_iface
     s.include_own = args.include_own_traffic

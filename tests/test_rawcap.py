@@ -32,8 +32,7 @@ def test_probe_filter_and_verbatim_encoding():
     text, stats = encode(pk, 1000, budget_tokens=2000)
     assert stats["level"] == 0 and stats["probes_dropped"] == 1
     assert "f1 tcp e1:443" in text and "\n0 f1> 517\n30 f1< 1448" in text
-    assert "203.0.113.5" not in text  # opaque endpoint ids by default
-    assert "203.0.113.5" in encode(pk, 1000, 2000, keep_ips=True)[0]
+    assert "203.0.113.5" not in text and "185.1.1.1" not in text  # addresses never appear
 
 
 def test_encoding_ladder_respects_budget():

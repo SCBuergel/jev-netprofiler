@@ -4,8 +4,8 @@
 captured) and prints one line per packet. Each line is parsed into a
 `Packet` (time, direction, flow, protocol, remote port, length). Every
 batch period the packets are encoded into a compact text under a token
-budget and sent to Jev as the state. Remote addresses are replaced by an
-opaque per-batch endpoint index unless `keep_ips` is set.
+budget and sent to Jev as the state. Remote addresses never leave the
+process: each remote host becomes an opaque per-batch endpoint index.
 
 Size ladder, applied until the text fits the budget:
   1. one line per packet
@@ -168,7 +168,7 @@ def drop_probes(packets: list[Packet]) -> tuple[list[Packet], int]:
     return keep, dropped
 
 
-def encode(packets: list[Packet], start_ms: int, budget_tokens: int, keep_ips: bool = False) -> tuple[str, dict]:
+def encode(packets: list[Packet], start_ms: int, budget_tokens: int) -> tuple[str, dict]:
     """Encode a batch as text under a token budget. Returns (text, stats)."""
     packets, dropped = drop_probes(packets)
     stats = {"packets": len(packets), "probes_dropped": dropped, "level": 0}
@@ -184,8 +184,7 @@ def encode(packets: list[Packet], start_ms: int, budget_tokens: int, keep_ips: b
     header = ["flows (id proto endpoint:port):"]
     for (proto, _lport, _ep), fid in flows.items():
         p0 = next(p for p in packets if p.tuple4 == (proto, _lport, _ep))
-        ep = p0.remote_ip if keep_ips else f"e{endpoints[p0.remote_ip]}"
-        header.append(f"f{fid} {'tcp' if proto == 6 else 'udp'} {ep}:{p0.remote_port}")
+        header.append(f"f{fid} {'tcp' if proto == 6 else 'udp'} e{endpoints[p0.remote_ip]}:{p0.remote_port}")
     head = "\n".join(header) + "\npackets (ms flow dir len; dir > out < in):\n"
     stats["flows"] = len(flows)
     stats["endpoints"] = len(endpoints)
